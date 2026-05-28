@@ -27,6 +27,7 @@ pub enum Action {
     NewCue,
     DeleteCue,
     SaveVtt,
+    Help,
     Nothing,
 }
 
@@ -55,6 +56,7 @@ pub fn map(key: KeyEvent) -> Action {
         KeyCode::Char('n') => NewCue,
         KeyCode::Char('d') => DeleteCue,
         KeyCode::Char('s') => SaveVtt,
+        KeyCode::Char('?') => Help,
         KeyCode::Char(d @ '0'..='9') => SeekFraction((d as u8 - b'0') as f64 / 10.0),
         _ => Nothing,
     }

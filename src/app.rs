@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 
 use crate::ffmpeg::MediaInfo;
@@ -22,6 +22,8 @@ pub enum Mode {
     Normal,
     /// Editing the selected cue's text; keys feed the edit buffer.
     Editing,
+    /// Typing the output filename for an export; keys feed the edit buffer.
+    Naming,
 }
 
 /// Length (seconds) of a freshly created cue.
@@ -35,6 +37,7 @@ pub struct App {
     pub selected_cue: usize,
     pub mode: Mode,
     pub edit_buffer: String,
+    pub show_help: bool,
     pub playhead: f64,
     pub mark_in: Option<f64>,
     pub mark_out: Option<f64>,
@@ -48,8 +51,17 @@ pub struct App {
     should_quit: bool,
     /// Set after a quit attempt with unsaved subtitle edits; a second quit confirms.
     quit_armed: bool,
+    /// An export awaiting a filename (while in [`Mode::Naming`]).
+    pending_export: Option<PendingExport>,
     /// An export awaiting overwrite confirmation.
     pending_cut: Option<PendingCut>,
+}
+
+/// A marked span waiting for the user to type its output filename.
+struct PendingExport {
+    mode: CutMode,
+    start: f64,
+    end: f64,
 }
 
 struct PendingCut {
@@ -86,6 +98,7 @@ impl App {
             selected_cue: 0,
             mode: Mode::Normal,
             edit_buffer: String::new(),
+            show_help: false,
             playhead: 0.0,
             mark_in: None,
             mark_out: None,
@@ -97,6 +110,7 @@ impl App {
             needs_frame: true,
             should_quit: false,
             quit_armed: false,
+            pending_export: None,
             pending_cut: None,
         }
     }
@@ -118,22 +132,32 @@ impl App {
 
             terminal.draw(|f| ui::render(f, self))?;
 
-            if self.kitty_ok {
+            // The kitty image draws above text, so while the help overlay is up
+            // we hide it; otherwise paint the current frame.
+            if self.show_help {
+                self.pane.clear(&mut out).ok();
+            } else if self.kitty_ok {
                 let vrect = ui::inner(ui::layout(self.area).video);
                 self.pane.present(&mut out, vrect, self.cell).ok();
             }
 
             if event::poll(Duration::from_millis(100)).unwrap_or(false) {
                 match event::read()? {
-                    Event::Key(k) if k.kind == KeyEventKind::Press => {
-                        if self.mode == Mode::Editing {
-                            self.handle_edit_key(k.code);
-                        } else if self.pending_cut.is_some() {
-                            self.handle_confirm(k.code);
-                        } else {
-                            self.apply(keymap::map(k));
+                    Event::Key(k) if k.kind == KeyEventKind::Press => match self.mode {
+                        Mode::Editing => self.handle_edit_key(k),
+                        Mode::Naming => self.handle_naming_key(k),
+                        Mode::Normal => {
+                            if self.show_help {
+                                // Any key dismisses help; restore the frame.
+                                self.show_help = false;
+                                self.pane.invalidate();
+                            } else if self.pending_cut.is_some() {
+                                self.handle_confirm(k.code);
+                            } else {
+                                self.apply(keymap::map(k));
+                            }
                         }
-                    }
+                    },
                     Event::Resize(_, _) => {
                         self.pane.invalidate();
                         self.needs_frame = true;
@@ -204,6 +228,7 @@ impl App {
             Action::NewCue => self.new_cue(),
             Action::DeleteCue => self.delete_cue(),
             Action::SaveVtt => self.save_vtt(),
+            Action::Help => self.show_help = true,
             Action::Nothing => {}
         }
     }
@@ -236,13 +261,8 @@ impl App {
         self.status = "editing — Enter to commit, Esc to cancel".into();
     }
 
-    fn handle_edit_key(&mut self, code: ratatui::crossterm::event::KeyCode) {
-        use ratatui::crossterm::event::KeyCode;
-        match code {
-            KeyCode::Char(c) => self.edit_buffer.push(c),
-            KeyCode::Backspace => {
-                self.edit_buffer.pop();
-            }
+    fn handle_edit_key(&mut self, key: KeyEvent) {
+        match key.code {
             KeyCode::Enter => {
                 let text = std::mem::take(&mut self.edit_buffer);
                 if let Some(doc) = &mut self.vtt {
@@ -257,9 +277,69 @@ impl App {
                 self.mode = Mode::Normal;
                 self.status = "edit cancelled".into();
             }
-            _ => {}
+            _ => edit_buffer_key(&mut self.edit_buffer, key),
         }
     }
+
+    /// Type the filename for the export of the marked span (prefilled with a
+    /// suggested name that you can replace).
+    fn export(&mut self, mode: CutMode) {
+        let (Some(start), Some(end)) = (self.mark_in, self.mark_out) else {
+            self.status = "set IN (i) and OUT (o) first".into();
+            return;
+        };
+        let stem = self
+            .info
+            .path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("clip");
+        let ext = self
+            .info
+            .path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("mp4");
+        self.edit_buffer = format!("{stem}-clip.{ext}");
+        self.pending_export = Some(PendingExport { mode, start, end });
+        self.mode = Mode::Naming;
+        self.status = "save clip as (in source folder) — Enter to cut, Esc to cancel, Ctrl-U clears".into();
+    }
+
+    fn handle_naming_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                let name = std::mem::take(&mut self.edit_buffer);
+                self.mode = Mode::Normal;
+                let Some(pe) = self.pending_export.take() else { return };
+                if name.trim().is_empty() {
+                    self.status = "export cancelled (empty name)".into();
+                    return;
+                }
+                let output = resolve_output(&self.info.path, &name);
+                if output.exists() {
+                    self.status =
+                        format!("{} exists — y to overwrite, n to cancel", output.display());
+                    self.pending_cut = Some(PendingCut {
+                        output,
+                        mode: pe.mode,
+                        start: pe.start,
+                        end: pe.end,
+                    });
+                } else {
+                    self.run_cut(&output, pe.mode, pe.start, pe.end, false);
+                }
+            }
+            KeyCode::Esc => {
+                self.edit_buffer.clear();
+                self.pending_export = None;
+                self.mode = Mode::Normal;
+                self.status = "export cancelled".into();
+            }
+            _ => edit_buffer_key(&mut self.edit_buffer, key),
+        }
+    }
+
 
     fn snap_cue(&mut self, start: bool) {
         let playhead = self.playhead;
@@ -306,35 +386,34 @@ impl App {
             self.status = "no subtitle path to save to".into();
             return;
         };
-        match &self.vtt {
-            Some(doc) => match doc.save(&path) {
-                Ok(()) => {
-                    self.vtt_dirty = false;
-                    self.status = format!("saved {}", path.display());
-                }
-                Err(e) => self.status = format!("save failed: {e}"),
-            },
-            None => self.status = "nothing to save".into(),
-        }
-    }
-
-    /// Begin an export of the marked span, prompting if the target exists.
-    fn export(&mut self, mode: CutMode) {
-        let (Some(start), Some(end)) = (self.mark_in, self.mark_out) else {
-            self.status = "set IN (i) and OUT (o) first".into();
+        if self.vtt.is_none() {
+            self.status = "nothing to save".into();
             return;
+        }
+
+        // Preserve the pristine original before the first in-place overwrite.
+        let backup = match crate::util::backup_once(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("backup failed, not saving: {e}");
+                return;
+            }
         };
-        let output = cut::default_output(&self.info.path, start, end);
-        if output.exists() {
-            self.status = format!("{} exists — y to overwrite, n to cancel", output.display());
-            self.pending_cut = Some(PendingCut { output, mode, start, end });
-        } else {
-            self.run_cut(&output, mode, start, end, false);
+
+        let doc = self.vtt.as_ref().expect("vtt present");
+        match doc.save(&path) {
+            Ok(()) => {
+                self.vtt_dirty = false;
+                self.status = match backup {
+                    Some(b) => format!("saved {} (original → {})", path.display(), b.display()),
+                    None => format!("saved {}", path.display()),
+                };
+            }
+            Err(e) => self.status = format!("save failed: {e}"),
         }
     }
 
-    fn handle_confirm(&mut self, code: ratatui::crossterm::event::KeyCode) {
-        use ratatui::crossterm::event::KeyCode;
+    fn handle_confirm(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
                 let pc = self.pending_cut.take().expect("pending cut present");
@@ -390,10 +469,70 @@ impl App {
     }
 }
 
+/// Resolve a typed name to an output path: a bare name lands in `source`'s
+/// folder; a name with a directory or absolute path is used as-is. If no
+/// extension is given, `source`'s extension is appended.
+fn resolve_output(source: &std::path::Path, name: &str) -> PathBuf {
+    let typed = std::path::Path::new(name.trim());
+    let has_dir =
+        typed.is_absolute() || typed.parent().is_some_and(|p| !p.as_os_str().is_empty());
+    let mut out = if has_dir {
+        typed.to_path_buf()
+    } else {
+        match source.parent() {
+            Some(dir) => dir.join(typed),
+            None => typed.to_path_buf(),
+        }
+    };
+    if out.extension().is_none() {
+        if let Some(ext) = source.extension() {
+            out.set_extension(ext);
+        }
+    }
+    out
+}
+
+/// Apply a single keypress to a text input buffer (typed chars, Backspace, and
+/// Ctrl-U to clear the line). Shared by the cue editor and the export-name prompt.
+fn edit_buffer_key(buffer: &mut String, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => buffer.clear(),
+        KeyCode::Char(c) => buffer.push(c),
+        KeyCode::Backspace => {
+            buffer.pop();
+        }
+        _ => {}
+    }
+}
+
 /// Heuristic: are we in a terminal that speaks the kitty graphics protocol?
 fn detect_kitty() -> bool {
     if std::env::var_os("KITTY_WINDOW_ID").is_some() {
         return true;
     }
     matches!(std::env::var("TERM"), Ok(t) if t.contains("kitty"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_output;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn bare_name_lands_in_source_folder() {
+        let out = resolve_output(Path::new("/movies/talk.mp4"), "intro.mp4");
+        assert_eq!(out, PathBuf::from("/movies/intro.mp4"));
+    }
+
+    #[test]
+    fn missing_extension_inherits_source() {
+        let out = resolve_output(Path::new("/movies/talk.mkv"), "intro");
+        assert_eq!(out, PathBuf::from("/movies/intro.mkv"));
+    }
+
+    #[test]
+    fn explicit_directory_is_respected() {
+        let out = resolve_output(Path::new("/movies/talk.mp4"), "/tmp/clip.mp4");
+        assert_eq!(out, PathBuf::from("/tmp/clip.mp4"));
+    }
 }

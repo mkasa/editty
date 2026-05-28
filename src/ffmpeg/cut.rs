@@ -1,11 +1,11 @@
 //! Export the segment between two timestamps via ffmpeg.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow};
 
-use crate::util::{fmt_ffmpeg_time, fmt_filename_stamp};
+use crate::util::fmt_ffmpeg_time;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum CutMode {
@@ -13,21 +13,6 @@ pub enum CutMode {
     Fast,
     /// Re-encode: frame-accurate cut points, slower.
     Precise,
-}
-
-/// Build the default output path: `<stem>_<in>-<out>.<ext>` beside the source.
-pub fn default_output(input: &Path, start: f64, end: f64) -> PathBuf {
-    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("clip");
-    let ext = input.extension().and_then(|s| s.to_str()).unwrap_or("mp4");
-    let name = format!(
-        "{stem}_{}-{}.{ext}",
-        fmt_filename_stamp(start),
-        fmt_filename_stamp(end)
-    );
-    match input.parent() {
-        Some(dir) => dir.join(name),
-        None => PathBuf::from(name),
-    }
 }
 
 /// Cut `[start, end)` from `input` into `output`. Refuses to overwrite unless
@@ -80,15 +65,6 @@ pub fn cut(
 mod tests {
     use super::*;
     use crate::ffmpeg::probe;
-
-    #[test]
-    fn default_output_naming() {
-        let p = default_output(std::path::Path::new("/a/b/movie.mp4"), 1.5, 3.25);
-        assert_eq!(
-            p,
-            std::path::PathBuf::from("/a/b/movie_00-00-01-500-00-00-03-250.mp4")
-        );
-    }
 
     #[test]
     fn rejects_inverted_marks() {

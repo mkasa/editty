@@ -1,4 +1,5 @@
 pub mod cuelist;
+pub mod help;
 pub mod statusbar;
 pub mod timeline;
 pub mod video;
@@ -44,10 +45,26 @@ pub fn inner(rect: Rect) -> Rect {
     }
 }
 
+/// A `width`×`height` rectangle centered within `area` (clamped to fit).
+pub fn centered(width: u16, height: u16, area: Rect) -> Rect {
+    let w = width.min(area.width);
+    let h = height.min(area.height);
+    Rect {
+        x: area.x + (area.width.saturating_sub(w)) / 2,
+        y: area.y + (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    }
+}
+
 pub fn render(f: &mut Frame, app: &App) {
     let areas = layout(f.area());
     video::render(f, app, areas.video);
     timeline::render(f, app, areas.timeline);
     cuelist::render(f, app, areas.cues);
     statusbar::render(f, app, areas.status);
+
+    if app.show_help {
+        help::render(f, f.area());
+    }
 }
