@@ -13,7 +13,7 @@ use crate::ffmpeg::MediaInfo;
 use crate::ffmpeg::cut::{self, CutMode};
 use crate::ffmpeg::frame::{self, fit_dims};
 use crate::keymap::{self, Action};
-use crate::player::{CellSize, KittyPane, VideoBackend, query_cell_size};
+use crate::player::{CellSize, KittyPane, VideoBackend, detect_transport, query_cell_size};
 use crate::ui;
 use crate::vtt::VttDoc;
 
@@ -92,7 +92,7 @@ impl App {
             kitty_ok,
             cell,
             status,
-            pane: Box::new(KittyPane::new()),
+            pane: Box::new(KittyPane::new(detect_transport())),
             area: Rect::default(),
             needs_frame: true,
             should_quit: false,

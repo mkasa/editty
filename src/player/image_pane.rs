@@ -27,6 +27,30 @@ pub struct CellSize {
     pub h: u16,
 }
 
+/// How frame bytes reach the terminal.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Transport {
+    /// Base64 the pixels into the escape stream (works everywhere, incl. SSH).
+    Direct,
+    /// Hand the terminal a POSIX shm object name (local only, much faster).
+    SharedMemory,
+}
+
+/// Pick the best transport: shared memory when we're a local kitty, else direct.
+/// Shared memory cannot work to a remote terminal, so any SSH marker, or the
+/// `EDITTY_NO_SHM` escape hatch, forces the direct transport.
+pub fn detect_transport() -> Transport {
+    let ssh = std::env::var_os("SSH_CONNECTION").is_some()
+        || std::env::var_os("SSH_TTY").is_some()
+        || std::env::var_os("SSH_CLIENT").is_some();
+    let disabled = std::env::var_os("EDITTY_NO_SHM").is_some();
+    if cfg!(unix) && !ssh && !disabled {
+        Transport::SharedMemory
+    } else {
+        Transport::Direct
+    }
+}
+
 /// Query the terminal's pixel-per-cell size; falls back to a common default
 /// when the terminal doesn't report pixel geometry.
 pub fn query_cell_size() -> CellSize {
@@ -66,11 +90,18 @@ pub struct KittyPane {
     last_rect: Option<Rect>,
     /// Id of the placement currently on screen, if any.
     current_id: Option<u32>,
+    transport: Transport,
 }
 
 impl KittyPane {
-    pub fn new() -> Self {
-        Self { frame: None, dirty: false, last_rect: None, current_id: None }
+    pub fn new(transport: Transport) -> Self {
+        Self {
+            frame: None,
+            dirty: false,
+            last_rect: None,
+            current_id: None,
+            transport,
+        }
     }
 }
 
@@ -113,7 +144,7 @@ impl VideoBackend for KittyPane {
         };
         // Cursor home is 1-based.
         write!(out, "\x1b[{};{}H", row + 1, col + 1)?;
-        transmit(out, frame, next_id, true)?;
+        transmit(out, frame, next_id, self.transport, true)?;
         if let Some(prev) = self.current_id {
             write!(out, "\x1b_Ga=d,d=i,i={prev}\x1b\\")?;
         }
@@ -140,16 +171,36 @@ impl VideoBackend for KittyPane {
 /// advance past it. Used by the standalone `--show` spike to verify the
 /// protocol works in a given terminal.
 pub fn print_frame(out: &mut dyn Write, frame: &Frame) -> io::Result<()> {
-    transmit(out, frame, ID_A, false)?;
+    transmit(out, frame, ID_A, Transport::Direct, false)?;
     writeln!(out)?;
     out.flush()
 }
 
-/// Transmit + display a frame as RGBA under image/placement `id`, chunked to the
-/// protocol's payload limit. When `keep_cursor` is set, the cursor stays put
-/// (`C=1`) so a TUI redraw isn't disturbed; otherwise the cursor advances past
-/// the image.
-fn transmit(out: &mut dyn Write, frame: &Frame, id: u32, keep_cursor: bool) -> io::Result<()> {
+/// Transmit + display a frame under image/placement `id` using `transport`.
+/// Shared memory falls back to the direct path on any shm failure. When
+/// `keep_cursor` is set, the cursor stays put (`C=1`) so a TUI redraw isn't
+/// disturbed; otherwise the cursor advances past the image.
+fn transmit(
+    out: &mut dyn Write,
+    frame: &Frame,
+    id: u32,
+    transport: Transport,
+    keep_cursor: bool,
+) -> io::Result<()> {
+    #[cfg(unix)]
+    if transport == Transport::SharedMemory {
+        if let Ok(name) = crate::player::shm::write(&frame.rgba) {
+            return transmit_shm(out, frame, id, &name, keep_cursor);
+        }
+        // shm failed (e.g. ENOSPC) — fall through to the direct transport.
+    }
+    let _ = transport;
+    transmit_direct(out, frame, id, keep_cursor)
+}
+
+/// Direct transport: base64 the RGBA into the escape stream, chunked to the
+/// protocol's payload limit.
+fn transmit_direct(out: &mut dyn Write, frame: &Frame, id: u32, keep_cursor: bool) -> io::Result<()> {
     let b64 = STANDARD.encode(&frame.rgba);
     let bytes = b64.as_bytes();
     let (w, h) = (frame.width, frame.height);
@@ -182,6 +233,27 @@ fn transmit(out: &mut dyn Write, frame: &Frame, id: u32, keep_cursor: bool) -> i
     Ok(())
 }
 
+/// Shared-memory transport: the payload is just the base64 shm object name; the
+/// raw bytes (`S`) are read by the terminal from that object. One escape, no
+/// chunking, no per-frame PTY bandwidth.
+#[cfg(unix)]
+fn transmit_shm(
+    out: &mut dyn Write,
+    frame: &Frame,
+    id: u32,
+    name: &str,
+    keep_cursor: bool,
+) -> io::Result<()> {
+    let (w, h) = (frame.width, frame.height);
+    let len = frame.rgba.len();
+    let cursor = if keep_cursor { ",C=1" } else { "" };
+    let b64name = STANDARD.encode(name.as_bytes());
+    write!(
+        out,
+        "\x1b_Ga=T,q=2,f=32,t=s,s={w},v={h},S={len},i={id},p={id}{cursor};{b64name}\x1b\\"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,7 +270,7 @@ mod tests {
 
     #[test]
     fn double_buffer_alternates_ids_and_draws_before_deleting() {
-        let mut pane = KittyPane::new();
+        let mut pane = KittyPane::new(Transport::Direct);
 
         pane.set_frame(tiny());
         let mut b1 = Vec::new();
@@ -229,7 +301,7 @@ mod tests {
 
     #[test]
     fn present_is_noop_when_not_dirty() {
-        let mut pane = KittyPane::new();
+        let mut pane = KittyPane::new(Transport::Direct);
         pane.set_frame(tiny());
         let mut b1 = Vec::new();
         pane.present(&mut b1, rect(), CELL).unwrap();
@@ -243,7 +315,7 @@ mod tests {
 
     #[test]
     fn clear_frees_both_buffers() {
-        let mut pane = KittyPane::new();
+        let mut pane = KittyPane::new(Transport::Direct);
         pane.set_frame(tiny());
         pane.present(&mut Vec::new(), rect(), CELL).unwrap();
         let mut out = Vec::new();
