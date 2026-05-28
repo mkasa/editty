@@ -60,6 +60,15 @@ pub fn fmt_ffmpeg_time(secs: f64) -> String {
     format!("{:.3}", secs.max(0.0))
 }
 
+/// Format a playback speed compactly: `1x`, `0.5x`, `1.5x`.
+pub fn fmt_speed(s: f64) -> String {
+    if s.fract().abs() < 1e-9 {
+        format!("{}x", s as i64)
+    } else {
+        format!("{s}x")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

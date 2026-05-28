@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::app::{App, Mode};
-use crate::util::fmt_clock;
+use crate::util::{fmt_clock, fmt_speed};
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     // Naming an export takes over the bar with the editable filename prompt.
@@ -55,6 +55,15 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Style::default().add_modifier(Modifier::BOLD),
     ));
 
+    // Highlight the speed only when it's off normal, to avoid clutter at 1x.
+    let speed = app.speed();
+    let speed_style = if (speed - 1.0).abs() > 1e-9 {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    parts.push(Span::styled(format!(" {} ", fmt_speed(speed)), speed_style));
+
     let mark = |label: &str, v: Option<f64>, color: Color| -> Span<'static> {
         match v {
             Some(t) => Span::styled(format!(" {label}{} ", fmt_clock(t)), Style::default().fg(color)),
@@ -75,7 +84,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Mode::Editing => " type text   Enter commit   Esc cancel ",
         Mode::Naming => "",
         Mode::Normal => {
-            " Space play  ←/→ seek  ,/. frame  i/o mark  x/X cut  j/k cue  s save  ? help  q quit "
+            " Space play  -/= speed  ←/→ seek  i/o mark  x/X cut  j/k cue  s save  ? help  q quit "
         }
     };
     parts.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));

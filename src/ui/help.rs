@@ -10,6 +10,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 const ROWS: &[(&str, &str)] = &[
     ("", "Playback / seek"),
     ("Space", "play / pause (with audio)"),
+    ("-  =", "slower / faster (0.25×–2×, pitch kept)"),
     ("←  →", "seek 1 second"),
     ("<  >", "seek 10 seconds"),
     (",  .", "step one frame"),

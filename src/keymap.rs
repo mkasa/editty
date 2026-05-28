@@ -7,6 +7,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 pub enum Action {
     Quit,
     TogglePlay,
+    SpeedUp,
+    SpeedDown,
     /// Seek relative to the playhead, in seconds.
     SeekBy(f64),
     /// Step whole frames (sign = direction).
@@ -37,6 +39,8 @@ pub fn map(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => Quit,
         KeyCode::Char(' ') => TogglePlay,
+        KeyCode::Char('-') | KeyCode::Char('_') => SpeedDown,
+        KeyCode::Char('=') | KeyCode::Char('+') => SpeedUp,
         KeyCode::Left => SeekBy(-1.0),
         KeyCode::Right => SeekBy(1.0),
         KeyCode::Char('<') => SeekBy(-10.0),

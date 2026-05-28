@@ -32,6 +32,8 @@ pub struct Playback {
     start_pos: f64,
     duration: f64,
     fps: f64,
+    /// Playback rate: content seconds advanced per real second (1.0 = normal).
+    speed: f64,
     /// Set when the first frame arrives, so frame 0 shows at elapsed 0 (no skip).
     clock_start: Option<Instant>,
     /// The next frame read but not yet due, with its presentation time.
@@ -49,6 +51,7 @@ impl Playback {
         start_pos: f64,
         duration: f64,
         source_fps: f64,
+        speed: f64,
         width: u32,
         height: u32,
     ) -> Result<Self> {
@@ -93,6 +96,7 @@ impl Playback {
             start_pos,
             duration,
             fps,
+            speed: speed.max(0.05),
             clock_start: None,
             head: None,
             frame_index: 0,
@@ -104,7 +108,7 @@ impl Playback {
     /// first frame arrives and the clock starts).
     pub fn clock(&self) -> f64 {
         match self.clock_start {
-            Some(t) => self.start_pos + t.elapsed().as_secs_f64(),
+            Some(t) => self.start_pos + t.elapsed().as_secs_f64() * self.speed,
             None => self.start_pos,
         }
     }
@@ -156,9 +160,14 @@ impl Playback {
 
     fn spawn_audio(&mut self) {
         let Some(path) = &self.audio_path else { return };
-        self.audio = Command::new("ffplay")
-            .args(["-nodisp", "-vn", "-autoexit", "-loglevel", "quiet", "-ss"])
-            .arg(format!("{:.3}", self.start_pos))
+        let mut cmd = Command::new("ffplay");
+        cmd.args(["-nodisp", "-vn", "-autoexit", "-loglevel", "quiet", "-ss"])
+            .arg(format!("{:.3}", self.start_pos));
+        // Match audio tempo to the playback speed (pitch preserved), like YouTube.
+        if (self.speed - 1.0).abs() > 1e-3 {
+            cmd.args(["-af", &atempo_chain(self.speed)]);
+        }
+        self.audio = cmd
             .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -168,11 +177,42 @@ impl Playback {
     }
 }
 
+/// Build an `atempo` filter chain for `speed`. A single `atempo` only accepts
+/// 0.5–2.0, so out-of-range speeds are decomposed into a product of in-range
+/// factors (e.g. 0.25 -> `atempo=0.5,atempo=0.5`).
+fn atempo_chain(speed: f64) -> String {
+    let mut factors = Vec::new();
+    let mut s = speed.max(0.05);
+    while s > 2.0 {
+        factors.push(2.0);
+        s /= 2.0;
+    }
+    while s < 0.5 {
+        factors.push(0.5);
+        s *= 2.0;
+    }
+    factors.push(s);
+    factors
+        .iter()
+        .map(|f| format!("atempo={f}"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::thread::sleep;
     use std::time::Duration;
+
+    #[test]
+    fn atempo_chains_out_of_range_speeds() {
+        assert_eq!(atempo_chain(1.5), "atempo=1.5");
+        assert_eq!(atempo_chain(2.0), "atempo=2");
+        assert_eq!(atempo_chain(0.5), "atempo=0.5");
+        assert_eq!(atempo_chain(0.25), "atempo=0.5,atempo=0.5");
+        assert_eq!(atempo_chain(4.0), "atempo=2,atempo=2");
+    }
 
     #[test]
     fn streams_frames_advances_clock_and_finishes() {
@@ -184,7 +224,7 @@ mod tests {
         let (w, h) = (64u32, 36u32);
         // Start near the end (audio OFF so the test stays silent) so it finishes fast.
         let mut pb =
-            Playback::start(input, false, 7.5, 8.0, 30.0, w, h).expect("start playback");
+            Playback::start(input, false, 7.5, 8.0, 30.0, 1.0, w, h).expect("start playback");
         assert!(pb.audio.is_none(), "audio must not spawn when has_audio=false");
 
         let mut frames = 0usize;

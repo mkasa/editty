@@ -30,6 +30,10 @@ pub enum Mode {
 /// Length (seconds) of a freshly created cue.
 const NEW_CUE_LEN: f64 = 2.0;
 
+/// Selectable playback speeds; `DEFAULT_SPEED_IDX` is normal speed.
+const SPEEDS: [f64; 5] = [0.25, 0.5, 1.0, 1.5, 2.0];
+const DEFAULT_SPEED_IDX: usize = 2;
+
 pub struct App {
     pub info: MediaInfo,
     pub vtt_path: Option<PathBuf>,
@@ -52,6 +56,8 @@ pub struct App {
     should_quit: bool,
     /// Active playback session, if currently playing.
     playback: Option<Playback>,
+    /// Index into [`SPEEDS`] for the current playback rate.
+    speed_idx: usize,
     /// Set after a quit attempt with unsaved subtitle edits; a second quit confirms.
     quit_armed: bool,
     /// An export awaiting a filename (while in [`Mode::Naming`]).
@@ -113,6 +119,7 @@ impl App {
             needs_frame: true,
             should_quit: false,
             playback: None,
+            speed_idx: DEFAULT_SPEED_IDX,
             quit_armed: false,
             pending_export: None,
             pending_cut: None,
@@ -217,6 +224,8 @@ impl App {
                 }
             }
             Action::TogglePlay => self.toggle_play(),
+            Action::SpeedDown => self.change_speed(-1),
+            Action::SpeedUp => self.change_speed(1),
             Action::SeekBy(d) => self.seek_to(self.playhead + d),
             Action::FrameStep(n) => {
                 let dt = n as f64 / self.info.fps.max(1.0);
@@ -472,6 +481,10 @@ impl App {
         self.playback.is_some()
     }
 
+    pub fn speed(&self) -> f64 {
+        SPEEDS[self.speed_idx]
+    }
+
     /// Space toggles playback. Pausing freezes the playhead where the clock was;
     /// starting streams from the current playhead (restarting from 0 if at end).
     fn toggle_play(&mut self) {
@@ -481,9 +494,13 @@ impl App {
             self.playhead = pos.clamp(0.0, self.info.duration);
             self.needs_frame = true;
             self.status = "paused".into();
-            return;
+        } else {
+            self.start_playback();
         }
+    }
 
+    /// Stream from the current playhead at the current speed.
+    fn start_playback(&mut self) {
         if !self.kitty_ok {
             self.status = "playback needs the kitty preview".into();
             return;
@@ -498,21 +515,39 @@ impl App {
             return;
         }
         let (w, h) = fit_dims(self.info.width, self.info.height, max_w, max_h);
+        let speed = self.speed();
         match Playback::start(
             &self.info.path,
             self.info.audio_codec.is_some(),
             self.playhead,
             self.info.duration,
             self.info.fps,
+            speed,
             w,
             h,
         ) {
             Ok(pb) => {
                 self.playback = Some(pb);
                 self.needs_frame = false;
-                self.status = "playing".into();
+                self.status = format!("playing {}", crate::util::fmt_speed(speed));
             }
             Err(e) => self.status = format!("play failed: {e}"),
+        }
+    }
+
+    /// Step the playback speed through [`SPEEDS`]. Restarts the stream in place
+    /// when playing (ffplay can't retempo live).
+    fn change_speed(&mut self, delta: i32) {
+        let next = (self.speed_idx as i32 + delta).clamp(0, SPEEDS.len() as i32 - 1) as usize;
+        if next == self.speed_idx {
+            return;
+        }
+        self.speed_idx = next;
+        self.status = format!("speed {}", crate::util::fmt_speed(self.speed()));
+        if self.playback.is_some() {
+            // playhead tracks the clock during playback, so resume from here.
+            self.playback = None;
+            self.start_playback();
         }
     }
 
