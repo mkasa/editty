@@ -53,6 +53,8 @@ pub struct App {
     pane: Box<dyn VideoBackend>,
     area: Rect,
     needs_frame: bool,
+    /// When the pending scrub decode should be frame-accurate (set by stepping).
+    precise_seek: bool,
     should_quit: bool,
     /// Active playback session, if currently playing.
     playback: Option<Playback>,
@@ -117,6 +119,7 @@ impl App {
             pane: Box::new(KittyPane::new(detect_transport())),
             area: Rect::default(),
             needs_frame: true,
+            precise_seek: false,
             should_quit: false,
             playback: None,
             speed_idx: DEFAULT_SPEED_IDX,
@@ -205,6 +208,8 @@ impl App {
                 break;
             }
         }
+        // Stop audio/video processes promptly, then remove the image.
+        self.playback = None;
         self.pane.clear(&mut out).ok();
         Ok(())
     }
@@ -230,6 +235,8 @@ impl App {
             Action::FrameStep(n) => {
                 let dt = n as f64 / self.info.fps.max(1.0);
                 self.seek_to(self.playhead + dt);
+                // Stepping wants the exact adjacent frame, not the nearest keyframe.
+                self.precise_seek = true;
             }
             Action::SeekStart => self.seek_to(0.0),
             Action::SeekEnd => self.seek_to(self.info.duration),
@@ -516,16 +523,7 @@ impl App {
         }
         let (w, h) = fit_dims(self.info.width, self.info.height, max_w, max_h);
         let speed = self.speed();
-        match Playback::start(
-            &self.info.path,
-            self.info.audio_codec.is_some(),
-            self.playhead,
-            self.info.duration,
-            self.info.fps,
-            speed,
-            w,
-            h,
-        ) {
+        match Playback::start(&self.info, self.playhead, speed, w, h) {
             Ok(pb) => {
                 self.playback = Some(pb);
                 self.needs_frame = false;
@@ -556,6 +554,8 @@ impl App {
         if self.playback.take().is_some() {
             self.status = "paused".into();
         }
+        // Coarse by default; FrameStep re-enables precise after calling this.
+        self.precise_seek = false;
         let clamped = t.clamp(0.0, self.info.duration);
         if (clamped - self.playhead).abs() > f64::EPSILON {
             self.playhead = clamped;
@@ -571,7 +571,8 @@ impl App {
             return;
         }
         let (w, h) = fit_dims(self.info.width, self.info.height, max_w, max_h);
-        match frame::extract_rgba(&self.info.path, self.playhead, w, h, false) {
+        let precise = self.precise_seek;
+        match frame::extract_rgba(&self.info.path, self.playhead, w, h, precise) {
             Ok(frame) => {
                 self.pane.set_frame(frame);
                 self.needs_frame = false;

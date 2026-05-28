@@ -40,17 +40,25 @@ pub fn extract_rgba(
     height: u32,
     precise: bool,
 ) -> Result<Frame> {
-    let ts = format!("{:.3}", secs.max(0.0));
+    let secs = secs.max(0.0);
     let scale = format!("scale={width}:{height}:flags=fast_bilinear");
 
     let mut cmd = Command::new("ffmpeg");
     cmd.args(["-hide_banner", "-loglevel", "error"]);
-    if !precise {
-        cmd.args(["-ss", &ts]);
-    }
-    cmd.arg("-i").arg(path);
     if precise {
-        cmd.args(["-ss", &ts]);
+        // Two-stage seek: a fast input seek to a keyframe shortly before the
+        // target, then a short accurate decode forward to the exact frame. This
+        // stays frame-accurate while only decoding ~one GOP, even deep into a
+        // long file (a plain output seek would decode from the very start).
+        const PRESEEK: f64 = 0.5;
+        let coarse = (secs - PRESEEK).max(0.0);
+        cmd.args(["-ss", &format!("{coarse:.3}")]);
+        cmd.arg("-i").arg(path);
+        cmd.args(["-ss", &format!("{:.3}", secs - coarse)]);
+    } else {
+        // Fast input seek to the nearest keyframe (good enough for scrubbing).
+        cmd.args(["-ss", &format!("{secs:.3}")]);
+        cmd.arg("-i").arg(path);
     }
     cmd.args([
         "-frames:v", "1",
@@ -74,14 +82,47 @@ pub fn extract_rgba(
     let expected = (width as usize) * (height as usize) * 4;
     if rgba.len() < expected {
         if !status.success() {
-            return Err(anyhow!("ffmpeg failed to extract frame at {ts}s"));
+            return Err(anyhow!("ffmpeg failed to extract frame at {secs:.3}s"));
         }
         return Err(anyhow!(
-            "short frame at {ts}s: got {} bytes, expected {expected}",
+            "short frame at {secs:.3}s: got {} bytes, expected {expected}",
             rgba.len()
         ));
     }
     rgba.truncate(expected);
 
     Ok(Frame { width, height, rgba })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fit_dims_preserves_aspect_and_is_even() {
+        // 640x360 (16:9) into a 200x200 box -> width-bound, even dims.
+        let (w, h) = fit_dims(640, 360, 200, 200);
+        assert_eq!((w, h), (200, 112));
+        assert_eq!(w % 2, 0);
+        assert_eq!(h % 2, 0);
+        // Never upscales beyond the source.
+        assert_eq!(fit_dims(640, 360, 4000, 4000), (640, 360));
+    }
+
+    #[test]
+    fn precise_step_yields_distinct_adjacent_frames() {
+        let input = std::path::Path::new("assets/sample.mp4");
+        if !input.exists() {
+            eprintln!("skipping: assets/sample.mp4 missing");
+            return;
+        }
+        let (w, h) = (96, 54);
+        let a = extract_rgba(input, 2.0, w, h, true).expect("frame a");
+        let b = extract_rgba(input, 2.0 + 1.0 / 30.0, w, h, true).expect("frame b");
+        assert_eq!(a.rgba.len(), b.rgba.len());
+        assert_ne!(
+            a.rgba, b.rgba,
+            "stepping one frame with precise seek must change the image"
+        );
+    }
 }

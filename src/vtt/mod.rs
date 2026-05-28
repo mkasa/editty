@@ -19,7 +19,7 @@ fn secs_to_ts(secs: f64) -> VttTimestamp {
 }
 
 fn ts_to_secs(ts: &VttTimestamp) -> f64 {
-    let d: Duration = ts.clone().into();
+    let d: Duration = (*ts).into();
     d.as_secs_f64()
 }
 

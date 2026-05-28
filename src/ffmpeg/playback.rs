@@ -7,7 +7,7 @@
 //! player. Audio is decoded by ffplay; we never parse its clock.
 
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread::JoinHandle;
 use std::time::Instant;
@@ -15,6 +15,7 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use crossbeam_channel::{Receiver, TryRecvError, bounded};
 
+use super::MediaInfo;
 use super::frame::Frame;
 
 /// Cap the streamed frame rate; preview doesn't need more and it bounds work.
@@ -43,19 +44,19 @@ pub struct Playback {
 }
 
 impl Playback {
-    /// Start streaming from `start_pos`, scaled to `width`x`height`. `has_audio`
-    /// gates whether an ffplay process is launched.
+    /// Start streaming `info` from `start_pos` at `speed`, scaled to
+    /// `width`x`height`. Audio (via ffplay) is launched only if `info` has it.
     pub fn start(
-        path: &Path,
-        has_audio: bool,
+        info: &MediaInfo,
         start_pos: f64,
-        duration: f64,
-        source_fps: f64,
         speed: f64,
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        let fps = source_fps.clamp(1.0, MAX_FPS);
+        let path = &info.path;
+        let duration = info.duration;
+        let has_audio = info.audio_codec.is_some();
+        let fps = info.fps.clamp(1.0, MAX_FPS);
         let scale = format!("scale={width}:{height}:flags=fast_bilinear,fps={fps}");
         let mut video = Command::new("ffmpeg")
             .args(["-hide_banner", "-loglevel", "error", "-ss"])
@@ -202,6 +203,7 @@ fn atempo_chain(speed: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
     use std::thread::sleep;
     use std::time::Duration;
 
@@ -222,10 +224,19 @@ mod tests {
             return;
         }
         let (w, h) = (64u32, 36u32);
-        // Start near the end (audio OFF so the test stays silent) so it finishes fast.
-        let mut pb =
-            Playback::start(input, false, 7.5, 8.0, 30.0, 1.0, w, h).expect("start playback");
-        assert!(pb.audio.is_none(), "audio must not spawn when has_audio=false");
+        // Audio OFF (audio_codec: None) so the test stays silent; start near the
+        // end so it finishes fast.
+        let info = MediaInfo {
+            path: input.to_path_buf(),
+            duration: 8.0,
+            fps: 30.0,
+            width: 640,
+            height: 360,
+            video_codec: "h264".into(),
+            audio_codec: None,
+        };
+        let mut pb = Playback::start(&info, 7.5, 1.0, w, h).expect("start playback");
+        assert!(pb.audio.is_none(), "audio must not spawn without an audio track");
 
         let mut frames = 0usize;
         let mut clock_after_first = None;
