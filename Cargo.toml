@@ -2,6 +2,8 @@
 name = "editty"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Terminal video editor using the kitty graphics protocol"
 
 [dependencies]
 anyhow = "1.0.102"
