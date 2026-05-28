@@ -1,0 +1,81 @@
+name: release
+
+# Build a macOS universal binary and attach it to a GitHub Release.
+# Triggered by pushing a version tag (e.g. `git tag v0.1.0 && git push --tags`).
+# `workflow_dispatch` lets you build on demand without publishing a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # required to create the GitHub Release
+
+jobs:
+  macos:
+    runs-on: macos-14 # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # Pure-Rust deps, so x86_64 cross-compiles fine from the arm64 runner.
+      - name: Build (Apple Silicon)
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      - name: Build (Intel)
+        run: cargo build --release --locked --target x86_64-apple-darwin
+
+      - name: Make universal binary
+        run: |
+          mkdir -p dist
+          lipo -create -output dist/editty \
+            target/aarch64-apple-darwin/release/editty \
+            target/x86_64-apple-darwin/release/editty
+          lipo -info dist/editty
+          chmod +x dist/editty
+
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME:-dev}"
+          name="editty-${version}-macos-universal"
+          mkdir -p "$name"
+          cp dist/editty "$name/"
+          [ -f README.md ] && cp README.md "$name/"
+          tar -czf "${name}.tar.gz" "$name"
+          shasum -a 256 "${name}.tar.gz" | tee "${name}.tar.gz.sha256"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: editty-macos-universal
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            *.tar.gz
+            *.tar.gz.sha256
+          generate_release_notes: true
+          body: |
+            macOS universal binary (Apple Silicon + Intel).
+
+            Requires `ffmpeg` (ffmpeg/ffprobe/ffplay) at runtime and the
+            [kitty](https://sw.kovidgoyal.net/kitty/) terminal for video preview.
+
+            The binary is unsigned, so Gatekeeper may block it on first run.
+            Allow it with:
+
+            ```sh
+            xattr -dr com.apple.quarantine ./editty
+            ```
