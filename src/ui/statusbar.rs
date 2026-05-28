@@ -39,7 +39,8 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let (badge, badge_bg) = match app.mode {
         Mode::Editing => (" EDIT ", Color::Magenta),
         Mode::Naming => (" NAME ", Color::Magenta),
-        Mode::Normal => (" PLAY ", Color::Blue),
+        Mode::Normal if app.is_playing() => (" ▶ PLAY ", Color::Green),
+        Mode::Normal => (" ▮▮ PAUSE ", Color::Blue),
     };
     parts.push(Span::styled(
         badge,
@@ -74,7 +75,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         Mode::Editing => " type text   Enter commit   Esc cancel ",
         Mode::Naming => "",
         Mode::Normal => {
-            " ←/→ seek  ,/. frame  i/o mark  x/X cut  j/k cue  ⏎ edit  s save  ? help  q quit "
+            " Space play  ←/→ seek  ,/. frame  i/o mark  x/X cut  j/k cue  s save  ? help  q quit "
         }
     };
     parts.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));

@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 /// `(keys, description)` rows; an empty `keys` renders as a section heading.
 const ROWS: &[(&str, &str)] = &[
     ("", "Playback / seek"),
+    ("Space", "play / pause (with audio)"),
     ("←  →", "seek 1 second"),
     ("<  >", "seek 10 seconds"),
     (",  .", "step one frame"),

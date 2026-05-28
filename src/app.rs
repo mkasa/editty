@@ -12,6 +12,7 @@ use ratatui::layout::Rect;
 use crate::ffmpeg::MediaInfo;
 use crate::ffmpeg::cut::{self, CutMode};
 use crate::ffmpeg::frame::{self, fit_dims};
+use crate::ffmpeg::playback::Playback;
 use crate::keymap::{self, Action};
 use crate::player::{CellSize, KittyPane, VideoBackend, detect_transport, query_cell_size};
 use crate::ui;
@@ -49,6 +50,8 @@ pub struct App {
     area: Rect,
     needs_frame: bool,
     should_quit: bool,
+    /// Active playback session, if currently playing.
+    playback: Option<Playback>,
     /// Set after a quit attempt with unsaved subtitle edits; a second quit confirms.
     quit_armed: bool,
     /// An export awaiting a filename (while in [`Mode::Naming`]).
@@ -109,6 +112,7 @@ impl App {
             area: Rect::default(),
             needs_frame: true,
             should_quit: false,
+            playback: None,
             quit_armed: false,
             pending_export: None,
             pending_cut: None,
@@ -121,9 +125,27 @@ impl App {
             let size = terminal.size().context("querying terminal size")?;
             self.area = Rect::new(0, 0, size.width, size.height);
 
-            // Decode the pending frame only when the input queue is idle, which
-            // naturally debounces bursts of held-key seeks.
-            if self.needs_frame
+            // Advance playback: take the newest due frame and follow its clock.
+            if self.playback.is_some() {
+                let (frame, clock, finished) = {
+                    let pb = self.playback.as_mut().unwrap();
+                    (pb.poll(), pb.clock(), pb.is_finished())
+                };
+                if let Some(f) = frame {
+                    self.pane.set_frame(f);
+                }
+                self.playhead = clock.min(self.info.duration);
+                if finished {
+                    self.playback = None;
+                    self.needs_frame = true;
+                    self.status = "playback finished".into();
+                }
+            }
+
+            // Scrub-decode the pending frame only when idle and not playing,
+            // which naturally debounces bursts of held-key seeks.
+            if self.playback.is_none()
+                && self.needs_frame
                 && self.kitty_ok
                 && !event::poll(Duration::ZERO).unwrap_or(false)
             {
@@ -141,7 +163,13 @@ impl App {
                 self.pane.present(&mut out, vrect, self.cell).ok();
             }
 
-            if event::poll(Duration::from_millis(100)).unwrap_or(false) {
+            // Tick fast while playing so frames present on time; idle otherwise.
+            let tick = if self.playback.is_some() {
+                Duration::from_millis(8)
+            } else {
+                Duration::from_millis(100)
+            };
+            if event::poll(tick).unwrap_or(false) {
                 match event::read()? {
                     Event::Key(k) if k.kind == KeyEventKind::Press => match self.mode {
                         Mode::Editing => self.handle_edit_key(k),
@@ -188,6 +216,7 @@ impl App {
                     self.should_quit = true;
                 }
             }
+            Action::TogglePlay => self.toggle_play(),
             Action::SeekBy(d) => self.seek_to(self.playhead + d),
             Action::FrameStep(n) => {
                 let dt = n as f64 / self.info.fps.max(1.0);
@@ -439,12 +468,63 @@ impl App {
         }
     }
 
+    pub fn is_playing(&self) -> bool {
+        self.playback.is_some()
+    }
+
+    /// Space toggles playback. Pausing freezes the playhead where the clock was;
+    /// starting streams from the current playhead (restarting from 0 if at end).
+    fn toggle_play(&mut self) {
+        if let Some(pb) = self.playback.take() {
+            let pos = pb.clock();
+            drop(pb); // kills ffmpeg/ffplay
+            self.playhead = pos.clamp(0.0, self.info.duration);
+            self.needs_frame = true;
+            self.status = "paused".into();
+            return;
+        }
+
+        if !self.kitty_ok {
+            self.status = "playback needs the kitty preview".into();
+            return;
+        }
+        if self.playhead >= self.info.duration {
+            self.playhead = 0.0;
+        }
+        let vrect = ui::inner(ui::layout(self.area).video);
+        let max_w = vrect.width as u32 * self.cell.w as u32;
+        let max_h = vrect.height as u32 * self.cell.h as u32;
+        if max_w < 2 || max_h < 2 {
+            return;
+        }
+        let (w, h) = fit_dims(self.info.width, self.info.height, max_w, max_h);
+        match Playback::start(
+            &self.info.path,
+            self.info.audio_codec.is_some(),
+            self.playhead,
+            self.info.duration,
+            self.info.fps,
+            w,
+            h,
+        ) {
+            Ok(pb) => {
+                self.playback = Some(pb);
+                self.needs_frame = false;
+                self.status = "playing".into();
+            }
+            Err(e) => self.status = format!("play failed: {e}"),
+        }
+    }
+
     fn seek_to(&mut self, t: f64) {
+        // Any manual seek pauses playback.
+        if self.playback.take().is_some() {
+            self.status = "paused".into();
+        }
         let clamped = t.clamp(0.0, self.info.duration);
         if (clamped - self.playhead).abs() > f64::EPSILON {
             self.playhead = clamped;
             self.needs_frame = true;
-            self.status.clear();
         }
     }
 

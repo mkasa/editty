@@ -6,6 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Action {
     Quit,
+    TogglePlay,
     /// Seek relative to the playhead, in seconds.
     SeekBy(f64),
     /// Step whole frames (sign = direction).
@@ -35,6 +36,7 @@ pub fn map(key: KeyEvent) -> Action {
     use Action::*;
     match key.code {
         KeyCode::Char('q') | KeyCode::Esc => Quit,
+        KeyCode::Char(' ') => TogglePlay,
         KeyCode::Left => SeekBy(-1.0),
         KeyCode::Right => SeekBy(1.0),
         KeyCode::Char('<') => SeekBy(-10.0),
