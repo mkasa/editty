@@ -54,20 +54,23 @@ pub trait VideoBackend {
     fn clear(&mut self, out: &mut dyn Write) -> io::Result<()>;
 }
 
-const IMAGE_ID: u32 = 1;
 /// Max base64 payload bytes per graphics escape, per the protocol.
 const CHUNK: usize = 4096;
+/// The two image ids we ping-pong between for flicker-free double buffering.
+const ID_A: u32 = 1;
+const ID_B: u32 = 2;
 
 pub struct KittyPane {
     frame: Option<Frame>,
     dirty: bool,
     last_rect: Option<Rect>,
-    drawn: bool,
+    /// Id of the placement currently on screen, if any.
+    current_id: Option<u32>,
 }
 
 impl KittyPane {
     pub fn new() -> Self {
-        Self { frame: None, dirty: false, last_rect: None, drawn: false }
+        Self { frame: None, dirty: false, last_rect: None, current_id: None }
     }
 }
 
@@ -98,27 +101,35 @@ impl VideoBackend for KittyPane {
         let col = rect.x + rect.width.saturating_sub(img_cols) / 2;
         let row = rect.y + rect.height.saturating_sub(img_rows) / 2;
 
-        // Drop the previous placement first so a smaller new frame leaves no
-        // remnants; batched into the same flush so there's no visible gap.
-        if self.drawn {
-            write!(out, "\x1b_Ga=d,d=i,i={IMAGE_ID}\x1b\\")?;
-        }
+        // Double buffering for zero flicker: draw the new frame on the *other*
+        // image id first (same size/position, and newer placements render on
+        // top, so it fully covers the old frame), THEN delete the old
+        // placement. Everything goes out in a single flush, so kitty composites
+        // and repaints once — the old frame is never cleared to empty, so there
+        // is no flash between frames.
+        let next_id = match self.current_id {
+            Some(ID_A) => ID_B,
+            _ => ID_A,
+        };
         // Cursor home is 1-based.
         write!(out, "\x1b[{};{}H", row + 1, col + 1)?;
-        transmit(out, frame, true)?;
+        transmit(out, frame, next_id, true)?;
+        if let Some(prev) = self.current_id {
+            write!(out, "\x1b_Ga=d,d=i,i={prev}\x1b\\")?;
+        }
         out.flush()?;
 
-        self.drawn = true;
+        self.current_id = Some(next_id);
         self.dirty = false;
         self.last_rect = Some(rect);
         Ok(())
     }
 
     fn clear(&mut self, out: &mut dyn Write) -> io::Result<()> {
-        if self.drawn {
-            write!(out, "\x1b_Ga=d,d=I,i={IMAGE_ID}\x1b\\")?;
+        if self.current_id.take().is_some() {
+            // Free both buffers regardless of which is showing.
+            write!(out, "\x1b_Ga=d,d=I,i={ID_A}\x1b\\\x1b_Ga=d,d=I,i={ID_B}\x1b\\")?;
             out.flush()?;
-            self.drawn = false;
             self.last_rect = None;
         }
         Ok(())
@@ -129,25 +140,23 @@ impl VideoBackend for KittyPane {
 /// advance past it. Used by the standalone `--show` spike to verify the
 /// protocol works in a given terminal.
 pub fn print_frame(out: &mut dyn Write, frame: &Frame) -> io::Result<()> {
-    transmit(out, frame, false)?;
+    transmit(out, frame, ID_A, false)?;
     writeln!(out)?;
     out.flush()
 }
 
-/// Transmit + display a frame as RGBA, chunked to the protocol's payload limit.
-/// When `keep_cursor` is set, the cursor stays put (`C=1`) so a TUI redraw isn't
-/// disturbed; otherwise the cursor advances past the image.
-fn transmit(out: &mut dyn Write, frame: &Frame, keep_cursor: bool) -> io::Result<()> {
+/// Transmit + display a frame as RGBA under image/placement `id`, chunked to the
+/// protocol's payload limit. When `keep_cursor` is set, the cursor stays put
+/// (`C=1`) so a TUI redraw isn't disturbed; otherwise the cursor advances past
+/// the image.
+fn transmit(out: &mut dyn Write, frame: &Frame, id: u32, keep_cursor: bool) -> io::Result<()> {
     let b64 = STANDARD.encode(&frame.rgba);
     let bytes = b64.as_bytes();
     let (w, h) = (frame.width, frame.height);
     let cursor = if keep_cursor { ",C=1" } else { "" };
 
     if bytes.len() <= CHUNK {
-        write!(
-            out,
-            "\x1b_Ga=T,q=2,f=32,s={w},v={h},i={IMAGE_ID},p={IMAGE_ID}{cursor};"
-        )?;
+        write!(out, "\x1b_Ga=T,q=2,f=32,s={w},v={h},i={id},p={id}{cursor};")?;
         out.write_all(bytes)?;
         return write!(out, "\x1b\\");
     }
@@ -160,7 +169,7 @@ fn transmit(out: &mut dyn Write, frame: &Frame, keep_cursor: bool) -> io::Result
         if first {
             write!(
                 out,
-                "\x1b_Ga=T,q=2,f=32,s={w},v={h},i={IMAGE_ID},p={IMAGE_ID}{cursor},m={more};"
+                "\x1b_Ga=T,q=2,f=32,s={w},v={h},i={id},p={id}{cursor},m={more};"
             )?;
             first = false;
         } else {
@@ -171,4 +180,75 @@ fn transmit(out: &mut dyn Write, frame: &Frame, keep_cursor: bool) -> io::Result
         offset = end;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiny() -> Frame {
+        Frame { width: 2, height: 2, rgba: vec![0u8; 16] }
+    }
+
+    const CELL: CellSize = CellSize { w: 8, h: 16 };
+
+    fn rect() -> Rect {
+        Rect::new(0, 0, 40, 20)
+    }
+
+    #[test]
+    fn double_buffer_alternates_ids_and_draws_before_deleting() {
+        let mut pane = KittyPane::new();
+
+        pane.set_frame(tiny());
+        let mut b1 = Vec::new();
+        pane.present(&mut b1, rect(), CELL).unwrap();
+        let s1 = String::from_utf8_lossy(&b1);
+        assert!(s1.contains("i=1,p=1"), "first frame uses id 1");
+        assert!(!s1.contains("a=d"), "first frame deletes nothing");
+
+        pane.set_frame(tiny());
+        let mut b2 = Vec::new();
+        pane.present(&mut b2, rect(), CELL).unwrap();
+        let s2 = String::from_utf8_lossy(&b2);
+        assert!(s2.contains("i=2,p=2"), "second frame uses id 2");
+        assert!(s2.contains("a=d,d=i,i=1"), "second frame deletes id 1");
+        // The flicker fix: new frame is transmitted BEFORE the old is deleted.
+        assert!(
+            s2.find("a=T").unwrap() < s2.find("a=d").unwrap(),
+            "draw must precede delete"
+        );
+
+        pane.set_frame(tiny());
+        let mut b3 = Vec::new();
+        pane.present(&mut b3, rect(), CELL).unwrap();
+        let s3 = String::from_utf8_lossy(&b3);
+        assert!(s3.contains("i=1,p=1"), "third frame ping-pongs back to id 1");
+        assert!(s3.contains("a=d,d=i,i=2"), "third frame deletes id 2");
+    }
+
+    #[test]
+    fn present_is_noop_when_not_dirty() {
+        let mut pane = KittyPane::new();
+        pane.set_frame(tiny());
+        let mut b1 = Vec::new();
+        pane.present(&mut b1, rect(), CELL).unwrap();
+        assert!(!b1.is_empty());
+
+        // No new frame, same rect: nothing should be emitted (no idle flicker).
+        let mut b2 = Vec::new();
+        pane.present(&mut b2, rect(), CELL).unwrap();
+        assert!(b2.is_empty(), "idle present must emit nothing");
+    }
+
+    #[test]
+    fn clear_frees_both_buffers() {
+        let mut pane = KittyPane::new();
+        pane.set_frame(tiny());
+        pane.present(&mut Vec::new(), rect(), CELL).unwrap();
+        let mut out = Vec::new();
+        pane.clear(&mut out).unwrap();
+        let s = String::from_utf8_lossy(&out);
+        assert!(s.contains("i=1") && s.contains("i=2"), "clear frees both ids");
+    }
 }
