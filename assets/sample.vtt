@@ -1,0 +1,15 @@
+WEBVTT
+
+NOTE This is a sample cue file for testing editty round-trips.
+
+1
+00:00:00.500 --> 00:00:02.500
+First caption appears here.
+
+2
+00:00:03.000 --> 00:00:05.000
+Second caption, a bit later.
+
+3
+00:00:05.500 --> 00:00:07.800
+Third and final caption.
