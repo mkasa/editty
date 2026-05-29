@@ -54,6 +54,18 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 ## Install
 
+### Homebrew (recommended)
+
+```sh
+brew tap mkasa/editty
+brew install editty
+```
+
+This pulls in `ffmpeg` automatically and builds editty from source. (You still
+need a kitty-graphics-capable terminal to preview video — see Prerequisites.)
+
+### From source
+
 ```sh
 # from the project directory
 cargo build --release
