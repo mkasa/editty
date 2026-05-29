@@ -498,8 +498,26 @@ impl App {
         };
         self.status = format!("exporting ({kind})…");
         match cut::cut(&self.info.path, output, start, end, mode, overwrite) {
-            Ok(()) => self.status = format!("saved {}", output.display()),
+            Ok(()) => self.status = self.export_companion_vtt(output, start, end),
             Err(e) => self.status = format!("export failed: {e}"),
+        }
+    }
+
+    /// After a successful clip export, write the trimmed subtitles beside it as
+    /// `<clip>.vtt`. Returns the status line to show. Uses the in-memory (edited)
+    /// subtitles, so any unsaved cue edits are reflected in the clip.
+    fn export_companion_vtt(&self, output: &std::path::Path, start: f64, end: f64) -> String {
+        let saved = format!("saved {}", output.display());
+        let Some(doc) = &self.vtt else { return saved };
+        let clip = doc.cut(start, end);
+        if clip.cue_count() == 0 {
+            return saved;
+        }
+        let vtt_out = output.with_extension("vtt");
+        let _ = crate::util::backup_once(&vtt_out);
+        match clip.save(&vtt_out) {
+            Ok(()) => format!("saved {} + {}", output.display(), vtt_out.display()),
+            Err(e) => format!("saved {} (subtitles failed: {e})", output.display()),
         }
     }
 

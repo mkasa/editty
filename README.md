@@ -20,7 +20,9 @@ editty is built for a fast local workflow: it streams frames over kitty's
 - **Playback with audio** — `Space` plays from the playhead with synced sound;
   variable speed from **0.25× to 2×**, pitch-preserved (like YouTube).
 - **Cutting** — mark an IN and OUT point and export the segment, either a fast
-  stream-copy or a frame-accurate re-encode. You name the output file.
+  stream-copy or a frame-accurate re-encode. You name the output file. If
+  subtitles are loaded, a matching `<clip>.vtt` is written next to the clip with
+  the cues clipped to the range and rebased to start at 0.
 - **WebVTT editing** — a cue list that follows the playhead; edit cue text, snap
   cue start/end to the playhead, add/delete cues, and save. The original `.vtt`
   is backed up to `.vtt.orig` before the first overwrite.

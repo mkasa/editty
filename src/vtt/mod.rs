@@ -171,6 +171,32 @@ impl VttDoc {
             self.doc.blocks.remove(bi);
         }
     }
+
+    /// Produce the subtitles for a clip spanning `[start, end)` (seconds): cues
+    /// outside the range are dropped, overlapping cues are clipped to it, and all
+    /// timestamps are rebased so the clip begins at 0. Non-cue blocks (STYLE,
+    /// REGION, NOTE) are carried over unchanged.
+    pub fn cut(&self, start: f64, end: f64) -> VttDoc {
+        let mut blocks = Vec::new();
+        for block in &self.doc.blocks {
+            match block {
+                VttBlock::Que(cue) => {
+                    let s = ts_to_secs(&cue.timings.start).max(start);
+                    let e = ts_to_secs(&cue.timings.end).min(end);
+                    if e > s {
+                        let mut c = cue.clone();
+                        c.timings.start = secs_to_ts(s - start);
+                        c.timings.end = secs_to_ts(e - start);
+                        blocks.push(VttBlock::Que(c));
+                    }
+                }
+                other => blocks.push(other.clone()),
+            }
+        }
+        VttDoc {
+            doc: WebVtt { header: self.doc.header.clone(), blocks },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -209,6 +235,26 @@ mod tests {
         assert_eq!(doc2.cue_count(), 3);
         assert_eq!(doc2.cue_text(1).as_deref(), Some("edited second caption"));
         let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn cut_clips_and_rebases_cues() {
+        // sample cues: 0.5–2.5, 3.0–5.0, 5.5–7.8
+        let doc = VttDoc::load(Path::new("assets/sample.vtt")).expect("load");
+        let clip = doc.cut(2.0, 6.0);
+        assert_eq!(clip.cue_count(), 3);
+        // cue 1 overlaps at the left: 2.0–2.5 -> 0.0–0.5
+        let (s0, e0) = clip.cue_times(0).unwrap();
+        assert!((s0 - 0.0).abs() < 0.01 && (e0 - 0.5).abs() < 0.01);
+        // cue 2 fully inside: 3.0–5.0 -> 1.0–3.0
+        let (s1, e1) = clip.cue_times(1).unwrap();
+        assert!((s1 - 1.0).abs() < 0.01 && (e1 - 3.0).abs() < 0.01);
+        // cue 3 overlaps at the right: 5.5–6.0 -> 3.5–4.0
+        let (s2, e2) = clip.cue_times(2).unwrap();
+        assert!((s2 - 3.5).abs() < 0.01 && (e2 - 4.0).abs() < 0.01);
+
+        // a range in the gap between cues yields nothing
+        assert_eq!(doc.cut(2.6, 2.9).cue_count(), 0);
     }
 
     #[test]
