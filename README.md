@@ -31,9 +31,13 @@ editty is built for a fast local workflow: it streams frames over kitty's
 
 - **macOS** (developed and tested there; should also work on Linux with kitty,
   untested). Windows is not supported.
-- **[kitty](https://sw.kovidgoyal.net/kitty/)** terminal — required for video
-  preview (the graphics protocol). Run editty in a *bare* kitty window, **not**
-  inside tmux/screen, where the protocol doesn't work.
+- A terminal that implements the **kitty graphics protocol** — required for
+  video preview. editty detects support at runtime (by querying the terminal),
+  so [kitty](https://sw.kovidgoyal.net/kitty/),
+  [Ghostty](https://ghostty.org/), [WezTerm](https://wezterm.org/), and Konsole
+  all work. Run in a *bare* terminal window, **not** inside tmux/screen, where
+  the protocol doesn't pass through. Shared-memory transport is used when the
+  terminal supports it, otherwise editty falls back automatically.
 - **ffmpeg** — provides `ffmpeg`, `ffprobe`, and `ffplay` (used for metadata,
   frame extraction, cutting, and audio playback).
 - **Rust** toolchain (2024 edition, Rust 1.85+) to build.

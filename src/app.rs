@@ -14,7 +14,7 @@ use crate::ffmpeg::cut::{self, CutMode};
 use crate::ffmpeg::frame::{self, fit_dims};
 use crate::ffmpeg::playback::Playback;
 use crate::keymap::{self, Action};
-use crate::player::{CellSize, KittyPane, VideoBackend, detect_transport, query_cell_size};
+use crate::player::{CellSize, KittyPane, Transport, VideoBackend, query_cell_size};
 use crate::ui;
 use crate::vtt::VttDoc;
 
@@ -84,7 +84,8 @@ struct PendingCut {
 
 impl App {
     pub fn new(info: MediaInfo, vtt_path: Option<PathBuf>) -> Self {
-        let kitty_ok = detect_kitty();
+        // Graphics support is probed at runtime once the terminal is in raw mode
+        // (see `detect_graphics`); assume none until then.
         let cell = query_cell_size();
 
         let mut status = String::new();
@@ -113,10 +114,10 @@ impl App {
             playhead: 0.0,
             mark_in: None,
             mark_out: None,
-            kitty_ok,
+            kitty_ok: false,
             cell,
             status,
-            pane: Box::new(KittyPane::new(detect_transport())),
+            pane: Box::new(KittyPane::new(Transport::Direct)),
             area: Rect::default(),
             needs_frame: true,
             precise_seek: false,
@@ -131,6 +132,7 @@ impl App {
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
         let mut out = io::stdout();
+        self.detect_graphics();
         loop {
             let size = terminal.size().context("querying terminal size")?;
             self.area = Rect::new(0, 0, size.width, size.height);
@@ -212,6 +214,23 @@ impl App {
         self.playback = None;
         self.pane.clear(&mut out).ok();
         Ok(())
+    }
+
+    /// Ask the terminal (now in raw mode) whether it supports the kitty graphics
+    /// protocol and the shared-memory transport, and configure the pane to match.
+    fn detect_graphics(&mut self) {
+        #[cfg(unix)]
+        {
+            let allow_shm = std::env::var_os("EDITTY_NO_SHM").is_none();
+            let support = crate::player::probe::probe(allow_shm);
+            self.kitty_ok = support.graphics;
+            let transport = if support.shm {
+                Transport::SharedMemory
+            } else {
+                Transport::Direct
+            };
+            self.pane = Box::new(KittyPane::new(transport));
+        }
     }
 
     fn apply(&mut self, action: Action) {
@@ -621,13 +640,6 @@ fn edit_buffer_key(buffer: &mut String, key: KeyEvent) {
     }
 }
 
-/// Heuristic: are we in a terminal that speaks the kitty graphics protocol?
-fn detect_kitty() -> bool {
-    if std::env::var_os("KITTY_WINDOW_ID").is_some() {
-        return true;
-    }
-    matches!(std::env::var("TERM"), Ok(t) if t.contains("kitty"))
-}
 
 #[cfg(test)]
 mod tests {

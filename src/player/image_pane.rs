@@ -36,21 +36,6 @@ pub enum Transport {
     SharedMemory,
 }
 
-/// Pick the best transport: shared memory when we're a local kitty, else direct.
-/// Shared memory cannot work to a remote terminal, so any SSH marker, or the
-/// `EDITTY_NO_SHM` escape hatch, forces the direct transport.
-pub fn detect_transport() -> Transport {
-    let ssh = std::env::var_os("SSH_CONNECTION").is_some()
-        || std::env::var_os("SSH_TTY").is_some()
-        || std::env::var_os("SSH_CLIENT").is_some();
-    let disabled = std::env::var_os("EDITTY_NO_SHM").is_some();
-    if cfg!(unix) && !ssh && !disabled {
-        Transport::SharedMemory
-    } else {
-        Transport::Direct
-    }
-}
-
 /// Query the terminal's pixel-per-cell size; falls back to a common default
 /// when the terminal doesn't report pixel geometry.
 pub fn query_cell_size() -> CellSize {

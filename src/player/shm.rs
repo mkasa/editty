@@ -62,6 +62,13 @@ pub fn write(data: &[u8]) -> io::Result<String> {
     }
 }
 
+/// Remove a shared-memory object by name (ignores "doesn't exist").
+pub fn unlink(name: &str) {
+    if let Ok(cname) = CString::new(name) {
+        unsafe { libc::shm_unlink(cname.as_ptr()) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
