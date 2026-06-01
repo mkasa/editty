@@ -11,7 +11,7 @@ editty is built for a fast local workflow: it streams frames over kitty's
 
 ## Demo
 
-<!-- Drop a screenshot or short screen capture (recorded in a bare kitty window) here. -->
+![editty in action — playback, chapter navigation, IN/OUT marking, and adding a named chapter](assets/demo.gif)
 
 ## Features
 
