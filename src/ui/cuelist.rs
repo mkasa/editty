@@ -19,7 +19,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let Some(doc) = &app.vtt else {
         f.render_widget(
-            Paragraph::new("(no subtitles — pass --vtt <file> to create or edit)")
+            Paragraph::new("(no subtitles — press G to generate with WhisperX, or --vtt <file>)")
                 .block(block)
                 .style(Style::default().fg(Color::DarkGray)),
             area,
@@ -30,7 +30,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let rows = doc.cue_rows();
     if rows.is_empty() {
         f.render_widget(
-            Paragraph::new("(no cues — press n to add one at the playhead)")
+            Paragraph::new("(no cues — n to add one, or G to generate with WhisperX)")
                 .block(block)
                 .style(Style::default().fg(Color::DarkGray)),
             area,

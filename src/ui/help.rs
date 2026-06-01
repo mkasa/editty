@@ -29,6 +29,7 @@ const ROWS: &[(&str, &str)] = &[
     ("n", "new cue at playhead"),
     ("d", "delete selected cue"),
     ("s", "save .vtt (backs up original to .vtt.orig)"),
+    ("G", "generate subtitles with WhisperX (when none loaded)"),
     ("", "Chapters"),
     ("m", "new chapter at playhead (then type a title)"),
     ("e", "edit selected chapter title"),

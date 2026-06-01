@@ -36,6 +36,7 @@ pub enum Action {
     ChapterNext,
     ChapterPrev,
     SaveChapters,
+    GenerateSubs,
     Help,
     Nothing,
 }
@@ -74,6 +75,7 @@ pub fn map(key: KeyEvent) -> Action {
         KeyCode::Char('}') => ChapterNext,
         KeyCode::Char('{') => ChapterPrev,
         KeyCode::Char('S') => SaveChapters,
+        KeyCode::Char('G') => GenerateSubs,
         KeyCode::Char('?') => Help,
         KeyCode::Char(d @ '0'..='9') => SeekFraction((d as u8 - b'0') as f64 / 10.0),
         _ => Nothing,

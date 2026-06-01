@@ -204,6 +204,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_whisperx_mmss_format() {
+        // WhisperX emits MM:SS.mmm timestamps (no hours component).
+        let text = "WEBVTT\n\n00:00.421 --> 00:10.482\nAnd so my fellow Americans\n\n";
+        let doc = VttDoc { doc: WebVtt::parse(text).expect("parse whisperx vtt") };
+        assert_eq!(doc.cue_count(), 1);
+        let (s, e) = doc.cue_times(0).unwrap();
+        assert!((s - 0.421).abs() < 0.01, "start {s}");
+        assert!((e - 10.482).abs() < 0.01, "end {e}");
+        assert_eq!(doc.cue_text(0).as_deref(), Some("And so my fellow Americans"));
+    }
+
+    #[test]
     fn round_trip_preserves_notes_and_edits() {
         let path = Path::new("assets/sample.vtt");
         if !path.exists() {

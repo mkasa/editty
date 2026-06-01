@@ -26,6 +26,11 @@ editty is built for a fast local workflow: it streams frames over kitty's
 - **WebVTT editing** — a cue list that follows the playhead; edit cue text, snap
   cue start/end to the playhead, add/delete cues, and save. The original `.vtt`
   is backed up to `.vtt.orig` before the first overwrite.
+- **Subtitle generation (WhisperX)** — with no subtitles loaded, press `G` to
+  transcribe the audio with [WhisperX](https://github.com/m-bain/whisperX). On
+  first use it creates a dedicated `whisperx` conda env and installs WhisperX;
+  then it transcribes (GPU if available, else CPU) and loads the result for
+  editing. Runs in the background so the UI stays responsive.
 - **Chapters** — named markers (YouTube-style points) in their own list beside
   the cues. Add a chapter at the playhead, name it, jump between chapters, and
   save to a sibling `<video>.chapter.txt` (one `M:SS Title` per line). It's
@@ -48,6 +53,9 @@ editty is built for a fast local workflow: it streams frames over kitty's
 - **ffmpeg** — provides `ffmpeg`, `ffprobe`, and `ffplay` (used for metadata,
   frame extraction, cutting, and audio playback).
 - **Rust** toolchain (2024 edition, Rust 1.85+) to build.
+- **conda** (Anaconda/Miniconda) — *optional*, only for WhisperX subtitle
+  generation (`G`). editty creates the `whisperx` env and installs WhisperX on
+  first use; a CUDA GPU is used automatically when present.
 
 On macOS with Homebrew:
 
@@ -90,6 +98,10 @@ editty <video> [--vtt <file>]
 - `--vtt <file>` — a WebVTT subtitle file. If omitted, a sibling `<video>.vtt`
   is loaded automatically when present; pass a non-existent path to start a new
   subtitle file.
+- `--whisper-model <name>` — Whisper model for `G` (default `large-v3`).
+- `--whisper-device <cuda|cpu>` — force the device (default: auto-detect).
+- `--whisper-lang <lang>` — spoken language (default: auto-detect).
+- `--whisper-env <name>` — conda env to run/create WhisperX in (default `whisperx`).
 
 Diagnostic / spike mode (prints a single frame and exits — handy to confirm
 graphics work in your terminal):
@@ -123,6 +135,7 @@ Press `?` any time for this list.
 | `[` / `]` | snap cue start / end to the playhead |
 | `n` / `d` | new cue at playhead / delete selected cue |
 | `s` | save the `.vtt` (backs up the original to `.vtt.orig`) |
+| `G` | generate subtitles with WhisperX (when none are loaded) |
 | `m` | new chapter at playhead (then type a title) |
 | `e` | edit selected chapter title |
 | `{` / `}` | select previous / next chapter (seeks to it) |

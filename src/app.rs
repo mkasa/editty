@@ -18,6 +18,7 @@ use crate::keymap::{self, Action};
 use crate::player::{CellSize, KittyPane, Transport, VideoBackend, query_cell_size};
 use crate::ui;
 use crate::vtt::VttDoc;
+use crate::whisperx::{Progress, WhisperXConfig, WhisperXJob};
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
@@ -80,6 +81,10 @@ pub struct App {
     pending_export: Option<PendingExport>,
     /// An export awaiting overwrite confirmation.
     pending_cut: Option<PendingCut>,
+    /// WhisperX subtitle generation config (from the CLI).
+    wx_cfg: WhisperXConfig,
+    /// A running WhisperX subtitle-generation job, if any.
+    whisperx: Option<WhisperXJob>,
 }
 
 /// A marked span waiting for the user to type its output filename.
@@ -97,7 +102,7 @@ struct PendingCut {
 }
 
 impl App {
-    pub fn new(info: MediaInfo, vtt_path: Option<PathBuf>) -> Self {
+    pub fn new(info: MediaInfo, vtt_path: Option<PathBuf>, wx_cfg: WhisperXConfig) -> Self {
         // Graphics support is probed at runtime once the terminal is in raw mode
         // (see `detect_graphics`); assume none until then.
         let cell = query_cell_size();
@@ -160,6 +165,8 @@ impl App {
             quit_armed: false,
             pending_export: None,
             pending_cut: None,
+            wx_cfg,
+            whisperx: None,
         }
     }
 
@@ -185,6 +192,11 @@ impl App {
                     self.needs_frame = true;
                     self.status = "playback finished".into();
                 }
+            }
+
+            // Drain any progress from a running subtitle-generation job.
+            if self.whisperx.is_some() {
+                self.poll_whisperx();
             }
 
             // Scrub-decode the pending frame only when idle and not playing,
@@ -245,6 +257,8 @@ impl App {
         }
         // Stop audio/video processes promptly, then remove the image.
         self.playback = None;
+        // Cancel any in-flight transcription (kills the child process).
+        self.whisperx = None;
         self.pane.clear(&mut out).ok();
         Ok(())
     }
@@ -331,6 +345,7 @@ impl App {
             Action::ChapterNext => self.select_chapter(1),
             Action::ChapterPrev => self.select_chapter(-1),
             Action::SaveChapters => self.save_chapters(),
+            Action::GenerateSubs => self.generate_subs(),
             Action::Help => self.show_help = true,
             Action::Nothing => {}
         }
@@ -600,6 +615,72 @@ impl App {
                 };
             }
             Err(e) => self.status = format!("chapter save failed: {e}"),
+        }
+    }
+
+    /// Start generating subtitles with WhisperX (key `G`). Only meaningful when
+    /// there are no subtitles yet and the video has an audio track.
+    fn generate_subs(&mut self) {
+        if self.whisperx.is_some() {
+            self.status = "subtitle generation already running".into();
+            return;
+        }
+        if self.vtt.as_ref().is_some_and(|d| d.cue_count() > 0) {
+            self.status = "subtitles already loaded".into();
+            return;
+        }
+        if self.info.audio_codec.is_none() {
+            self.status = "no audio track to transcribe".into();
+            return;
+        }
+        // Write to the chosen --vtt path, or a sibling <video>.vtt.
+        let target = self
+            .vtt_path
+            .clone()
+            .unwrap_or_else(|| self.info.path.with_extension("vtt"));
+        self.vtt_path = Some(target.clone());
+        self.whisperx = Some(WhisperXJob::start(
+            self.info.path.clone(),
+            target,
+            self.wx_cfg.clone(),
+        ));
+        self.status = "whisperx: starting…".into();
+    }
+
+    /// Drain progress from the WhisperX worker: update the status line, and on
+    /// completion load the generated subtitles (or report the failure).
+    fn poll_whisperx(&mut self) {
+        let mut events = Vec::new();
+        if let Some(job) = &self.whisperx {
+            while let Ok(msg) = job.rx.try_recv() {
+                events.push(msg);
+            }
+        }
+        for msg in events {
+            match msg {
+                Progress::Status(s) => self.status = format!("whisperx: {s}"),
+                Progress::Done(path) => {
+                    self.whisperx = None; // joins the worker thread
+                    match VttDoc::load(&path) {
+                        Ok(doc) => {
+                            let n = doc.cue_count();
+                            self.vtt = Some(doc);
+                            self.vtt_path = Some(path.clone());
+                            self.vtt_dirty = false;
+                            self.selected_cue = 0;
+                            self.status =
+                                format!("generated {n} cues → {}", path.display());
+                        }
+                        Err(e) => {
+                            self.status = format!("generated subtitles but load failed: {e}")
+                        }
+                    }
+                }
+                Progress::Failed(e) => {
+                    self.whisperx = None;
+                    self.status = format!("subtitle generation failed: {e}");
+                }
+            }
         }
     }
 

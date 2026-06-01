@@ -7,6 +7,7 @@ mod player;
 mod ui;
 mod util;
 mod vtt;
+mod whisperx;
 
 use std::io;
 
@@ -30,7 +31,7 @@ fn main() -> Result<()> {
     }
 
     let vtt = args.resolve_vtt();
-    let mut app = App::new(info, vtt);
+    let mut app = App::new(info, vtt, args.whisperx_config());
     let mut terminal = ratatui::try_init().context(
         "could not initialize the terminal (editty needs an interactive terminal; \
          run it in a bare kitty window)",
