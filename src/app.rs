@@ -9,6 +9,7 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::layout::Rect;
 
+use crate::chapter::Chapters;
 use crate::ffmpeg::MediaInfo;
 use crate::ffmpeg::cut::{self, CutMode};
 use crate::ffmpeg::frame::{self, fit_dims};
@@ -21,10 +22,17 @@ use crate::vtt::VttDoc;
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
     Normal,
-    /// Editing the selected cue's text; keys feed the edit buffer.
+    /// Editing a cue's or chapter's text; keys feed the edit buffer.
     Editing,
     /// Typing the output filename for an export; keys feed the edit buffer.
     Naming,
+}
+
+/// What the inline editor ([`Mode::Editing`]) is currently editing.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum EditTarget {
+    Cue,
+    Chapter,
 }
 
 /// Length (seconds) of a freshly created cue.
@@ -40,7 +48,13 @@ pub struct App {
     pub vtt: Option<VttDoc>,
     pub vtt_dirty: bool,
     pub selected_cue: usize,
+    pub chapters_path: PathBuf,
+    pub chapters: Chapters,
+    pub chapters_dirty: bool,
+    pub selected_chapter: usize,
     pub mode: Mode,
+    /// Which list the inline editor is editing (valid while `mode == Editing`).
+    pub edit_target: EditTarget,
     pub edit_buffer: String,
     pub show_help: bool,
     pub playhead: f64,
@@ -102,13 +116,32 @@ impl App {
             None => None,
         };
 
+        // Chapters live beside the video as `<stem>.chapter.txt`, auto-loaded.
+        let chapters_path = info.path.with_extension("chapter.txt");
+        let chapters = if chapters_path.exists() {
+            match Chapters::load(&chapters_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    status = format!("chapter load failed: {e}");
+                    Chapters::empty()
+                }
+            }
+        } else {
+            Chapters::empty()
+        };
+
         App {
             info,
             vtt_path,
             vtt,
             vtt_dirty: false,
             selected_cue: 0,
+            chapters_path,
+            chapters,
+            chapters_dirty: false,
+            selected_chapter: 0,
             mode: Mode::Normal,
+            edit_target: EditTarget::Cue,
             edit_buffer: String::new(),
             show_help: false,
             playhead: 0.0,
@@ -240,9 +273,9 @@ impl App {
         }
         match action {
             Action::Quit => {
-                if self.vtt_dirty && !self.quit_armed {
+                if (self.vtt_dirty || self.chapters_dirty) && !self.quit_armed {
                     self.quit_armed = true;
-                    self.status = "unsaved subtitle edits — q again to quit, s to save".into();
+                    self.status = "unsaved edits — q again to quit, s/S to save".into();
                 } else {
                     self.should_quit = true;
                 }
@@ -292,6 +325,12 @@ impl App {
             Action::NewCue => self.new_cue(),
             Action::DeleteCue => self.delete_cue(),
             Action::SaveVtt => self.save_vtt(),
+            Action::NewChapter => self.new_chapter(),
+            Action::EditChapter => self.begin_edit_chapter(),
+            Action::DeleteChapter => self.delete_chapter(),
+            Action::ChapterNext => self.select_chapter(1),
+            Action::ChapterPrev => self.select_chapter(-1),
+            Action::SaveChapters => self.save_chapters(),
             Action::Help => self.show_help = true,
             Action::Nothing => {}
         }
@@ -321,20 +360,30 @@ impl App {
         };
         // Single-line editor for v1: collapse multi-line payloads with a space.
         self.edit_buffer = text.replace('\n', " ");
+        self.edit_target = EditTarget::Cue;
         self.mode = Mode::Editing;
-        self.status = "editing — Enter to commit, Esc to cancel".into();
+        self.status = "editing cue — Enter to commit, Esc to cancel".into();
     }
 
     fn handle_edit_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => {
                 let text = std::mem::take(&mut self.edit_buffer);
-                if let Some(doc) = &mut self.vtt {
-                    doc.set_cue_text(self.selected_cue, &text);
-                    self.vtt_dirty = true;
+                match self.edit_target {
+                    EditTarget::Cue => {
+                        if let Some(doc) = &mut self.vtt {
+                            doc.set_cue_text(self.selected_cue, &text);
+                            self.vtt_dirty = true;
+                        }
+                        self.status = "cue updated".into();
+                    }
+                    EditTarget::Chapter => {
+                        self.chapters.set_title(self.selected_chapter, text.trim());
+                        self.chapters_dirty = true;
+                        self.status = "chapter updated".into();
+                    }
                 }
                 self.mode = Mode::Normal;
-                self.status = "cue updated".into();
             }
             KeyCode::Esc => {
                 self.edit_buffer.clear();
@@ -477,6 +526,83 @@ impl App {
         }
     }
 
+    /// Move the chapter selection and seek to the newly selected chapter.
+    fn select_chapter(&mut self, delta: i32) {
+        let count = self.chapters.len();
+        if count == 0 {
+            self.status = "no chapters (press m to add one)".into();
+            return;
+        }
+        let next = (self.selected_chapter as i32 + delta).clamp(0, count as i32 - 1) as usize;
+        self.selected_chapter = next;
+        if let Some(t) = self.chapters.time(next) {
+            self.seek_to(t);
+        }
+    }
+
+    /// Add a chapter at the playhead and start editing its title inline.
+    fn new_chapter(&mut self) {
+        let idx = self.chapters.add(self.playhead, "");
+        self.selected_chapter = idx;
+        self.chapters_dirty = true;
+        self.begin_edit_chapter();
+    }
+
+    fn begin_edit_chapter(&mut self) {
+        if self.chapters.is_empty() {
+            self.status = "no chapters (press m to add one)".into();
+            return;
+        }
+        let title = self
+            .chapters
+            .rows()
+            .get(self.selected_chapter)
+            .map(|c| c.title.clone())
+            .unwrap_or_default();
+        self.edit_buffer = title.replace('\n', " ");
+        self.edit_target = EditTarget::Chapter;
+        self.mode = Mode::Editing;
+        self.status = "editing chapter — Enter to commit, Esc to cancel".into();
+    }
+
+    fn delete_chapter(&mut self) {
+        if self.chapters.is_empty() {
+            return;
+        }
+        self.chapters.delete(self.selected_chapter);
+        self.selected_chapter = self
+            .selected_chapter
+            .min(self.chapters.len().saturating_sub(1));
+        self.chapters_dirty = true;
+        self.status = "chapter deleted".into();
+    }
+
+    fn save_chapters(&mut self) {
+        if self.chapters.is_empty() {
+            self.status = "no chapters to save".into();
+            return;
+        }
+        let path = self.chapters_path.clone();
+        // Preserve the pristine original before the first in-place overwrite.
+        let backup = match crate::util::backup_once(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = format!("backup failed, not saving: {e}");
+                return;
+            }
+        };
+        match self.chapters.save(&path) {
+            Ok(()) => {
+                self.chapters_dirty = false;
+                self.status = match backup {
+                    Some(b) => format!("saved {} (original → {})", path.display(), b.display()),
+                    None => format!("saved {}", path.display()),
+                };
+            }
+            Err(e) => self.status = format!("chapter save failed: {e}"),
+        }
+    }
+
     fn handle_confirm(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -498,27 +624,52 @@ impl App {
         };
         self.status = format!("exporting ({kind})…");
         match cut::cut(&self.info.path, output, start, end, mode, overwrite) {
-            Ok(()) => self.status = self.export_companion_vtt(output, start, end),
+            Ok(()) => {
+                let mut msg = format!("saved {}", output.display());
+                if let Some(extra) = self.export_companion_vtt(output, start, end) {
+                    msg.push_str(&format!(" + {extra}"));
+                }
+                if let Some(extra) = self.export_companion_chapters(output, start, end) {
+                    msg.push_str(&format!(" + {extra}"));
+                }
+                self.status = msg;
+            }
             Err(e) => self.status = format!("export failed: {e}"),
         }
     }
 
     /// After a successful clip export, write the trimmed subtitles beside it as
-    /// `<clip>.vtt`. Returns the status line to show. Uses the in-memory (edited)
-    /// subtitles, so any unsaved cue edits are reflected in the clip.
-    fn export_companion_vtt(&self, output: &std::path::Path, start: f64, end: f64) -> String {
-        let saved = format!("saved {}", output.display());
-        let Some(doc) = &self.vtt else { return saved };
+    /// `<clip>.vtt`. Returns a note for the status line (or `None` if there were
+    /// no cues in range). Uses the in-memory (edited) subtitles, so any unsaved
+    /// cue edits are reflected in the clip.
+    fn export_companion_vtt(&self, output: &std::path::Path, start: f64, end: f64) -> Option<String> {
+        let doc = self.vtt.as_ref()?;
         let clip = doc.cut(start, end);
         if clip.cue_count() == 0 {
-            return saved;
+            return None;
         }
         let vtt_out = output.with_extension("vtt");
         let _ = crate::util::backup_once(&vtt_out);
-        match clip.save(&vtt_out) {
-            Ok(()) => format!("saved {} + {}", output.display(), vtt_out.display()),
-            Err(e) => format!("saved {} (subtitles failed: {e})", output.display()),
+        Some(match clip.save(&vtt_out) {
+            Ok(()) => vtt_out.display().to_string(),
+            Err(e) => format!("subtitles failed: {e}"),
+        })
+    }
+
+    /// After a successful clip export, write the clipped chapters beside it as
+    /// `<clip>.chapter.txt`. Returns a note for the status line (or `None` if
+    /// there were no chapters in range). Uses the in-memory chapters.
+    fn export_companion_chapters(&self, output: &std::path::Path, start: f64, end: f64) -> Option<String> {
+        let clip = self.chapters.cut(start, end);
+        if clip.is_empty() {
+            return None;
         }
+        let ch_out = output.with_extension("chapter.txt");
+        let _ = crate::util::backup_once(&ch_out);
+        Some(match clip.save(&ch_out) {
+            Ok(()) => ch_out.display().to_string(),
+            Err(e) => format!("chapters failed: {e}"),
+        })
     }
 
     pub fn is_playing(&self) -> bool {

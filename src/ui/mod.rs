@@ -1,3 +1,4 @@
+pub mod chapters;
 pub mod cuelist;
 pub mod help;
 pub mod statusbar;
@@ -9,11 +10,13 @@ use ratatui::layout::{Constraint, Layout, Rect};
 
 use crate::app::App;
 
-/// The four stacked regions of the UI.
+/// The stacked regions of the UI. The list row is split side by side into the
+/// subtitle cue list and the chapter list.
 pub struct Areas {
     pub video: Rect,
     pub timeline: Rect,
     pub cues: Rect,
+    pub chapters: Rect,
     pub status: Rect,
 }
 
@@ -23,14 +26,20 @@ pub fn layout(area: Rect) -> Areas {
     let chunks = Layout::vertical([
         Constraint::Min(5),    // video pane (takes remaining space)
         Constraint::Length(3), // timeline
-        Constraint::Length(8), // cue list
+        Constraint::Length(8), // cue / chapter lists
         Constraint::Length(1), // status bar
     ])
     .split(area);
+    let lists = Layout::horizontal([
+        Constraint::Percentage(60), // subtitle cues
+        Constraint::Percentage(40), // chapters
+    ])
+    .split(chunks[2]);
     Areas {
         video: chunks[0],
         timeline: chunks[1],
-        cues: chunks[2],
+        cues: lists[0],
+        chapters: lists[1],
         status: chunks[3],
     }
 }
@@ -62,6 +71,7 @@ pub fn render(f: &mut Frame, app: &App) {
     video::render(f, app, areas.video);
     timeline::render(f, app, areas.timeline);
     cuelist::render(f, app, areas.cues);
+    chapters::render(f, app, areas.chapters);
     statusbar::render(f, app, areas.status);
 
     if app.show_help {

@@ -1,4 +1,5 @@
 mod app;
+mod chapter;
 mod cli;
 mod ffmpeg;
 mod keymap;

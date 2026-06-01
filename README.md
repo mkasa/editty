@@ -26,8 +26,13 @@ editty is built for a fast local workflow: it streams frames over kitty's
 - **WebVTT editing** — a cue list that follows the playhead; edit cue text, snap
   cue start/end to the playhead, add/delete cues, and save. The original `.vtt`
   is backed up to `.vtt.orig` before the first overwrite.
-- **Non-destructive** — cuts go to new files; subtitle saves keep a pristine
-  backup. Nothing is overwritten without a prompt.
+- **Chapters** — named markers (YouTube-style points) in their own list beside
+  the cues. Add a chapter at the playhead, name it, jump between chapters, and
+  save to a sibling `<video>.chapter.txt` (one `M:SS Title` per line). It's
+  auto-loaded when the video opens, and clipped + rebased into a matching
+  `<clip>.chapter.txt` whenever you export a segment.
+- **Non-destructive** — cuts go to new files; subtitle and chapter saves keep a
+  pristine backup. Nothing is overwritten without a prompt.
 
 ## Prerequisites
 
@@ -118,6 +123,11 @@ Press `?` any time for this list.
 | `[` / `]` | snap cue start / end to the playhead |
 | `n` / `d` | new cue at playhead / delete selected cue |
 | `s` | save the `.vtt` (backs up the original to `.vtt.orig`) |
+| `m` | new chapter at playhead (then type a title) |
+| `e` | edit selected chapter title |
+| `{` / `}` | select previous / next chapter (seeks to it) |
+| `M` | delete selected chapter |
+| `S` | save the `.chapter.txt` (backs up the original to `.chapter.txt.orig`) |
 | `?` | toggle help |
 | `q` / `Esc` | quit |
 
@@ -138,3 +148,6 @@ source's.
 - Cutting shells out to `ffmpeg` (`-c copy` for fast, `libx264`/`aac` for precise).
 - Subtitles are parsed and re-serialized with round-trip fidelity (NOTE/STYLE/
   REGION blocks are preserved).
+- Chapters are plain `M:SS Title` text (`<video>.chapter.txt`); on a cut the
+  chapter covering the IN point becomes the clip's `0:00` and later chapters are
+  rebased, mirroring how subtitles are clipped.
