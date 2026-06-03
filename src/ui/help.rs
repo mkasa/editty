@@ -1,84 +1,116 @@
 //! Centered help overlay listing all keybindings (toggled with `?`).
+//!
+//! Laid out in two columns so it fits an ordinary 80×24 terminal without
+//! clipping. Each `(keys, desc)` row renders as a key/description pair; an empty
+//! `keys` with text is a section heading, an empty `keys` with empty text is a
+//! spacer.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
-/// `(keys, description)` rows; an empty `keys` renders as a section heading.
-const ROWS: &[(&str, &str)] = &[
+const LEFT: &[(&str, &str)] = &[
     ("", "Playback / seek"),
-    ("Space", "play / pause (with audio)"),
-    ("-  =", "slower / faster (0.25×–2×, pitch kept)"),
+    ("Space", "play / pause"),
+    ("-  =", "slower / faster"),
     ("←  →", "seek 1 second"),
     ("<  >", "seek 10 seconds"),
     (",  .", "step one frame"),
-    ("0–9", "jump to 0–90% of duration"),
-    ("Home / End", "jump to start / end"),
+    ("0–9", "jump 0–90%"),
+    ("Home/End", "jump start / end"),
+    ("", ""),
     ("", "Cutting"),
-    ("i  o", "set IN / OUT marker"),
+    ("i  o", "set IN / OUT"),
     ("C", "clear markers"),
-    ("x", "export clip — fast (stream copy)"),
-    ("X", "export clip — precise (re-encode)"),
-    ("", "  then type a filename, Enter to cut"),
+    ("x", "export fast (copy)"),
+    ("X", "export precise"),
+    ("", "  then name it, Enter"),
+];
+
+const RIGHT: &[(&str, &str)] = &[
     ("", "Subtitles"),
-    ("j  k", "select previous / next cue (seeks to it)"),
-    ("Enter", "edit selected cue text"),
-    ("[  ]", "snap cue start / end to playhead"),
-    ("n", "new cue at playhead"),
-    ("d", "delete selected cue"),
-    ("s", "save .vtt (backs up original to .vtt.orig)"),
-    ("G", "generate subtitles with WhisperX (when none loaded)"),
+    ("j  k", "prev / next cue"),
+    ("Enter", "edit cue text"),
+    ("[  ]", "snap cue start / end"),
+    ("n  d", "new / delete cue"),
+    ("s", "save .vtt"),
+    ("G", "generate (WhisperX)"),
+    ("", ""),
     ("", "Chapters"),
-    ("m", "new chapter at playhead (then type a title)"),
-    ("e", "edit selected chapter title"),
-    ("{  }", "select previous / next chapter (seeks to it)"),
-    ("M", "delete selected chapter"),
-    ("S", "save .chapter.txt (backs up to .chapter.txt.orig)"),
+    ("m  e", "new / edit chapter"),
+    ("{  }", "prev / next chapter"),
+    ("M", "delete chapter"),
+    ("S", "save .chapter.txt"),
+    ("", ""),
     ("", "General"),
     ("?", "toggle this help"),
     ("q", "quit"),
 ];
 
-pub fn render(f: &mut Frame, area: Rect) {
-    let key_col = 12;
-    let mut lines: Vec<Line> = Vec::with_capacity(ROWS.len());
-    for (keys, desc) in ROWS {
-        if keys.is_empty() && !desc.starts_with("  ") {
-            // Section heading.
-            lines.push(Line::from(Span::styled(
-                *desc,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
-        } else {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{:>width$}  ", keys, width = key_col),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(*desc),
-            ]));
-        }
-    }
+const KEY_COL: usize = 8;
 
-    // Size to content (+2 for borders), centered.
-    let width = 56;
-    let height = lines.len() as u16 + 2;
+fn rows_to_lines(rows: &[(&str, &str)]) -> Vec<Line<'static>> {
+    rows.iter()
+        .map(|(keys, desc)| {
+            if keys.is_empty() {
+                if desc.is_empty() {
+                    Line::default() // spacer
+                } else if let Some(cont) = desc.strip_prefix("  ") {
+                    // continuation line, dimmed
+                    Line::from(Span::styled(
+                        format!("  {cont}"),
+                        Style::default().fg(Color::DarkGray),
+                    ))
+                } else {
+                    // section heading
+                    Line::from(Span::styled(
+                        desc.to_string(),
+                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    ))
+                }
+            } else {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{keys:>KEY_COL$}  "),
+                        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    ),
+                    Span::raw(desc.to_string()),
+                ])
+            }
+        })
+        .collect()
+}
+
+pub fn render(f: &mut Frame, area: Rect) {
+    let left = rows_to_lines(LEFT);
+    let right = rows_to_lines(RIGHT);
+
+    // Tallest column drives the height; +2 for the border. Width is two columns
+    // plus the border, clamped to the terminal so it can never be clipped.
+    let body_h = left.len().max(right.len()) as u16;
+    let height = (body_h + 2).min(area.height);
+    let width = 84.min(area.width);
     let popup = super::centered(width, height, area);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" editty — keys (any key to close) ")
         .border_style(Style::default().fg(Color::White));
+    let inner = super::inner(popup);
 
     f.render_widget(Clear, popup);
+    f.render_widget(block, popup);
+
+    let cols = Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(inner);
     f.render_widget(
-        Paragraph::new(lines).block(block).alignment(Alignment::Left),
-        popup,
+        Paragraph::new(left).alignment(Alignment::Left),
+        cols[0],
+    );
+    f.render_widget(
+        Paragraph::new(right).alignment(Alignment::Left),
+        cols[1],
     );
 }
