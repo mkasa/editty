@@ -4,6 +4,7 @@ mod cli;
 mod ffmpeg;
 mod keymap;
 mod player;
+mod textinput;
 mod ui;
 mod util;
 mod vtt;

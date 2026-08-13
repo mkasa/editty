@@ -4,6 +4,13 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use unicode_width::UnicodeWidthStr;
+
+/// How many terminal cells `s` occupies (CJK characters take two).
+pub fn display_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
 /// The `.orig` sidecar path for a file (e.g. `subs.vtt` -> `subs.vtt.orig`).
 /// Appends rather than replacing the extension so the source extension stays
 /// visible and two files with the same stem can't collide.

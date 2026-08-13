@@ -25,7 +25,10 @@ editty is built for a fast local workflow: it streams frames over kitty's
   the cues clipped to the range and rebased to start at 0.
 - **WebVTT editing** — a cue list that follows the playhead; edit cue text, snap
   cue start/end to the playhead, add/delete cues, and save. The original `.vtt`
-  is backed up to `.vtt.orig` before the first overwrite.
+  is backed up to `.vtt.orig` before the first overwrite. Editing a cue is a
+  real line editor: the cursor moves by character or word so you can change the
+  middle of a sentence, and long text wraps over as many rows as it needs — the
+  list scrolls with the cursor, so the end of a long cue is always reachable.
 - **Subtitle generation (WhisperX)** — with no subtitles loaded, press `G` to
   transcribe the audio with [WhisperX](https://github.com/m-bain/whisperX). On
   first use it creates a dedicated `whisperx` conda env and installs WhisperX;
@@ -144,10 +147,26 @@ Press `?` any time for this list.
 | `?` | toggle help |
 | `q` / `Esc` | quit |
 
-When exporting (`x`/`X`) you're prompted for a filename (Ctrl-U clears it,
-`Enter` cuts, `Esc` cancels). A bare name is saved next to the source video; a
-path or absolute name is honored as-is; omit the extension to inherit the
-source's.
+While editing text — a cue (`Enter`), a chapter title (`m`/`e`) or an export
+filename (`x`/`X`) — the keys are those of an ordinary line editor:
+
+| Keys | Action |
+|------|--------|
+| `←` / `→` | move the cursor one character |
+| `Ctrl-←` / `Ctrl-→` | move the cursor one word |
+| `Home` / `End` (or `Ctrl-A` / `Ctrl-E`) | start / end of the line |
+| `Backspace` / `Delete` | delete before / under the cursor |
+| `Ctrl-W` / `Ctrl-K` | delete the word before / the rest of the line |
+| `Ctrl-U` | clear the line |
+| `Enter` / `Esc` | commit / cancel |
+
+Text longer than the pane wraps onto further rows, and the list scrolls to keep
+the cursor in view. Multi-line cues are edited as one line (their line breaks
+become spaces).
+
+When exporting (`x`/`X`) you're prompted for a filename. A bare name is saved
+next to the source video; a path or absolute name is honored as-is; omit the
+extension to inherit the source's.
 
 ## How it works
 

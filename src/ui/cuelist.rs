@@ -7,8 +7,19 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::app::{App, Mode};
+use crate::app::{App, EditTarget, Mode};
 use crate::util::fmt_timestamp;
+
+/// The fixed part of a row: marker, ordinal and the cue's timings.
+fn prefix(i: usize, start: f64, end: f64, selected: bool) -> String {
+    let marker = if selected { "▶" } else { " " };
+    format!(
+        "{marker}{:>2} {}→{}  ",
+        i + 1,
+        fmt_timestamp(start),
+        fmt_timestamp(end)
+    )
+}
 
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let dirty = if app.vtt_dirty { " *" } else { "" };
@@ -39,45 +50,51 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let active = doc.active_cue(app.playhead);
-    let height = super::inner(area).height as usize;
+    let inner = super::inner(area);
+    let (height, width) = (inner.height as usize, inner.width as usize);
+    let selected_cue = app.selected_cue.min(rows.len() - 1);
 
-    // Window the list so the selected cue stays visible.
-    let start = app
-        .selected_cue
-        .saturating_sub(height.saturating_sub(1) / 2)
-        .min(rows.len().saturating_sub(height).max(0));
+    // While editing, the cue grows to as many rows as its text needs and the
+    // whole list scrolls by line, so the end of a long sentence stays reachable.
+    let editing = app.mode == Mode::Editing && app.edit_target == EditTarget::Cue;
+    let edit = editing.then(|| {
+        let (s, e, _) = &rows[selected_cue];
+        // No REVERSED here: the inverted cell is the cursor, and nothing else.
+        let style = Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD);
+        super::edit_rows(
+            &prefix(selected_cue, *s, *e, true),
+            &app.edit_input,
+            width,
+            style,
+        )
+    });
 
-    let mut lines: Vec<Line> = Vec::new();
-    for (i, (s, e, text)) in rows.iter().enumerate().skip(start).take(height) {
-        let selected = i == app.selected_cue;
-        let is_active = active == Some(i);
+    let lines = super::windowed_rows(
+        rows.len(),
+        selected_cue,
+        edit.as_ref().map(|(lines, cursor)| (lines.as_slice(), *cursor)),
+        height,
+        |i| {
+            let (s, e, text) = &rows[i];
+            let selected = i == selected_cue;
+            let content = format!(
+                "{}{}",
+                prefix(i, *s, *e, selected),
+                text.replace('\n', " ")
+            );
 
-        let body = if selected && app.mode == Mode::Editing {
-            format!("{}▏", app.edit_buffer)
-        } else {
-            text.replace('\n', " ")
-        };
-
-        let marker = if selected { "▶" } else { " " };
-        let content = format!(
-            "{marker}{:>2} {}→{}  {}",
-            i + 1,
-            fmt_timestamp(*s),
-            fmt_timestamp(*e),
-            body
-        );
-
-        let mut style = Style::default();
-        if is_active {
-            style = style.fg(Color::Cyan);
-        }
-        if selected {
-            style = style
-                .fg(if app.mode == Mode::Editing { Color::Yellow } else { Color::White })
-                .add_modifier(Modifier::BOLD | Modifier::REVERSED);
-        }
-        lines.push(Line::styled(content, style));
-    }
+            let mut style = Style::default();
+            if active == Some(i) {
+                style = style.fg(Color::Cyan);
+            }
+            if selected {
+                style = style
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD | Modifier::REVERSED);
+            }
+            Line::styled(content, style)
+        },
+    );
 
     f.render_widget(Paragraph::new(lines).block(block), area);
 }

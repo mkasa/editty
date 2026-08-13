@@ -12,7 +12,7 @@ use crate::util::{fmt_clock, fmt_speed};
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
     // Naming an export takes over the bar with the editable filename prompt.
     if app.mode == Mode::Naming {
-        let line = Line::from(vec![
+        let mut spans = vec![
             Span::styled(
                 " NAME ",
                 Style::default()
@@ -21,16 +21,19 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" save clip as: "),
-            Span::styled(
-                format!("{}\u{258f}", app.edit_buffer),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "   Enter cut · Esc cancel · Ctrl-U clear",
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]);
-        f.render_widget(Paragraph::new(line), area);
+        ];
+        let name = app.edit_input.text();
+        spans.extend(super::cursor_spans(
+            name,
+            0..name.len(),
+            Some(app.edit_input.cursor()),
+            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            "   Enter cut · Esc cancel · Ctrl-U clear",
+            Style::default().fg(Color::DarkGray),
+        ));
+        f.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
 
@@ -81,7 +84,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let hint = match app.mode {
-        Mode::Editing => " type text   Enter commit   Esc cancel ",
+        Mode::Editing => " ←/→ move  Ctrl-←/→ word  Home/End  BS/Del  Enter commit  Esc cancel ",
         Mode::Naming => "",
         Mode::Normal => {
             " Space play  -/= speed  ←/→ seek  i/o mark  x/X cut  j/k cue  s save  ? help  q quit "

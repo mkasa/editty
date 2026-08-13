@@ -27,6 +27,10 @@ const LEFT: &[(&str, &str)] = &[
     ("x", "export fast (copy)"),
     ("X", "export precise"),
     ("", "  then name it, Enter"),
+    ("", ""),
+    ("", "General"),
+    ("?", "toggle this help"),
+    ("q", "quit"),
 ];
 
 const RIGHT: &[(&str, &str)] = &[
@@ -44,9 +48,13 @@ const RIGHT: &[(&str, &str)] = &[
     ("M", "delete chapter"),
     ("S", "save .chapter.txt"),
     ("", ""),
-    ("", "General"),
-    ("?", "toggle this help"),
-    ("q", "quit"),
+    ("", "While editing text"),
+    ("←  →", "move by character"),
+    ("Ctrl-←/→", "move by word"),
+    ("Home/End", "start / end of line"),
+    ("BS  Del", "delete back / forward"),
+    ("Ctrl-W/K", "delete word / to end"),
+    ("Ctrl-U", "clear the line"),
 ];
 
 const KEY_COL: usize = 8;
@@ -113,4 +121,17 @@ pub fn render(f: &mut Frame, area: Rect) {
         Paragraph::new(right).alignment(Alignment::Left),
         cols[1],
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_overlay_fits_an_ordinary_terminal() {
+        // Rows plus the border have to fit 24 lines, or keys drop off the bottom
+        // unseen; rebalance the two columns rather than letting one grow.
+        let rows = LEFT.len().max(RIGHT.len()) + 2;
+        assert!(rows <= 24, "the help overlay needs {rows} lines");
+    }
 }

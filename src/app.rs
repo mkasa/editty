@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::Rect;
 
 use crate::chapter::Chapters;
@@ -16,11 +16,12 @@ use crate::ffmpeg::frame::{self, fit_dims};
 use crate::ffmpeg::playback::Playback;
 use crate::keymap::{self, Action};
 use crate::player::{CellSize, KittyPane, Transport, VideoBackend, query_cell_size};
+use crate::textinput::TextInput;
 use crate::ui;
 use crate::vtt::VttDoc;
 use crate::whisperx::{Progress, WhisperXConfig, WhisperXJob};
 
-#[derive(PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Mode {
     Normal,
     /// Editing a cue's or chapter's text; keys feed the edit buffer.
@@ -56,7 +57,8 @@ pub struct App {
     pub mode: Mode,
     /// Which list the inline editor is editing (valid while `mode == Editing`).
     pub edit_target: EditTarget,
-    pub edit_buffer: String,
+    /// The line being edited, with its cursor (also used by the naming prompt).
+    pub edit_input: TextInput,
     pub show_help: bool,
     pub playhead: f64,
     pub mark_in: Option<f64>,
@@ -147,7 +149,7 @@ impl App {
             selected_chapter: 0,
             mode: Mode::Normal,
             edit_target: EditTarget::Cue,
-            edit_buffer: String::new(),
+            edit_input: TextInput::default(),
             show_help: false,
             playhead: 0.0,
             mark_in: None,
@@ -374,16 +376,16 @@ impl App {
             return;
         };
         // Single-line editor for v1: collapse multi-line payloads with a space.
-        self.edit_buffer = text.replace('\n', " ");
+        self.edit_input = TextInput::with_text(text.replace('\n', " "));
         self.edit_target = EditTarget::Cue;
         self.mode = Mode::Editing;
-        self.status = "editing cue — Enter to commit, Esc to cancel".into();
+        self.status = "editing cue".into();
     }
 
     fn handle_edit_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => {
-                let text = std::mem::take(&mut self.edit_buffer);
+                let text = self.edit_input.take();
                 match self.edit_target {
                     EditTarget::Cue => {
                         if let Some(doc) = &mut self.vtt {
@@ -401,11 +403,11 @@ impl App {
                 self.mode = Mode::Normal;
             }
             KeyCode::Esc => {
-                self.edit_buffer.clear();
+                self.edit_input.clear();
                 self.mode = Mode::Normal;
                 self.status = "edit cancelled".into();
             }
-            _ => edit_buffer_key(&mut self.edit_buffer, key),
+            _ => self.edit_input.handle_key(key),
         }
     }
 
@@ -428,7 +430,7 @@ impl App {
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("mp4");
-        self.edit_buffer = format!("{stem}-clip.{ext}");
+        self.edit_input = TextInput::with_text(format!("{stem}-clip.{ext}"));
         self.pending_export = Some(PendingExport { mode, start, end });
         self.mode = Mode::Naming;
         self.status = "save clip as (in source folder) — Enter to cut, Esc to cancel, Ctrl-U clears".into();
@@ -437,7 +439,7 @@ impl App {
     fn handle_naming_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Enter => {
-                let name = std::mem::take(&mut self.edit_buffer);
+                let name = self.edit_input.take();
                 self.mode = Mode::Normal;
                 let Some(pe) = self.pending_export.take() else { return };
                 if name.trim().is_empty() {
@@ -459,12 +461,12 @@ impl App {
                 }
             }
             KeyCode::Esc => {
-                self.edit_buffer.clear();
+                self.edit_input.clear();
                 self.pending_export = None;
                 self.mode = Mode::Normal;
                 self.status = "export cancelled".into();
             }
-            _ => edit_buffer_key(&mut self.edit_buffer, key),
+            _ => self.edit_input.handle_key(key),
         }
     }
 
@@ -574,10 +576,10 @@ impl App {
             .get(self.selected_chapter)
             .map(|c| c.title.clone())
             .unwrap_or_default();
-        self.edit_buffer = title.replace('\n', " ");
+        self.edit_input = TextInput::with_text(title.replace('\n', " "));
         self.edit_target = EditTarget::Chapter;
         self.mode = Mode::Editing;
-        self.status = "editing chapter — Enter to commit, Esc to cancel".into();
+        self.status = "editing chapter".into();
     }
 
     fn delete_chapter(&mut self) {
@@ -877,24 +879,136 @@ fn resolve_output(source: &std::path::Path, name: &str) -> PathBuf {
     out
 }
 
-/// Apply a single keypress to a text input buffer (typed chars, Backspace, and
-/// Ctrl-U to clear the line). Shared by the cue editor and the export-name prompt.
-fn edit_buffer_key(buffer: &mut String, key: KeyEvent) {
-    match key.code {
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => buffer.clear(),
-        KeyCode::Char(c) => buffer.push(c),
-        KeyCode::Backspace => {
-            buffer.pop();
-        }
-        _ => {}
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
-    use super::resolve_output;
-    use std::path::{Path, PathBuf};
+    use super::*;
+    use std::path::Path;
+
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::style::Modifier;
+
+    use crate::util::display_width;
+
+    const TERM: (u16, u16) = (100, 30);
+
+    fn app_with_cue(text: &str) -> App {
+        let info = MediaInfo {
+            path: PathBuf::from("/tmp/editty-test.mp4"),
+            duration: 60.0,
+            fps: 30.0,
+            width: 1920,
+            height: 1080,
+            video_codec: "h264".into(),
+            audio_codec: None,
+        };
+        let wx = WhisperXConfig {
+            env: "whisperx".into(),
+            model: "large-v3".into(),
+            device: None,
+            language: None,
+        };
+        let mut app = App::new(info, None, wx);
+        let mut doc = VttDoc::empty();
+        doc.add_cue(0.0, 3.0, text);
+        app.vtt = Some(doc);
+        app
+    }
+
+    fn press(app: &mut App, code: KeyCode, times: usize) {
+        for _ in 0..times {
+            app.handle_edit_key(KeyEvent::from(code));
+        }
+    }
+
+    /// Draw the whole UI and read the subtitle pane back: its rows of text, and
+    /// the symbol in the inverted (cursor) cell if there is one.
+    fn cue_pane(app: &App) -> (Vec<String>, Option<String>) {
+        let (w, h) = TERM;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+        terminal.draw(|f| ui::render(f, app)).expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let pane = ui::inner(ui::layout(Rect::new(0, 0, w, h)).cues);
+
+        let mut cursor = None;
+        let mut rows = Vec::new();
+        for dy in 0..pane.height {
+            let mut row = String::new();
+            let mut dx = 0;
+            while dx < pane.width {
+                let cell = &buf[(pane.x + dx, pane.y + dy)];
+                if cursor.is_none() && cell.modifier.contains(Modifier::REVERSED) {
+                    cursor = Some(cell.symbol().to_string());
+                }
+                row.push_str(cell.symbol());
+                // Step over the blank cell a double-width character occupies.
+                dx += (display_width(cell.symbol()) as u16).max(1);
+            }
+            rows.push(row);
+        }
+        (rows, cursor)
+    }
+
+    #[test]
+    fn typing_lands_where_the_cursor_was_moved_to() {
+        let text = "これは長い日本語の字幕です。カーソルを動かして書き足せる必要があります。";
+        let mut app = app_with_cue(text);
+        app.begin_edit();
+
+        // Walk ten characters back from the end and insert there.
+        press(&mut app, KeyCode::Left, 10);
+        press(&mut app, KeyCode::Char('X'), 1);
+
+        let at = text.char_indices().nth_back(9).expect("ten chars in").0;
+        assert_eq!(
+            app.edit_input.text(),
+            format!("{}X{}", &text[..at], &text[at..]),
+            "the insertion belongs where the cursor was, not at the end"
+        );
+
+        // On screen, the cursor sits on the character it is in front of.
+        let (_, cursor) = cue_pane(&app);
+        assert_eq!(cursor.as_deref(), Some(&text[at..]).map(|s| &s[..3]));
+    }
+
+    #[test]
+    fn a_long_cue_wraps_and_scrolls_to_the_end() {
+        // Far more text than the six-row pane can hold at once.
+        let text = "字幕がとても長い場合の話です。".repeat(12);
+        let mut app = app_with_cue(&text);
+        app.begin_edit(); // cursor starts at the end of the text
+
+        let (rows, cursor) = cue_pane(&app);
+        assert!(
+            rows.iter().filter(|r| !r.trim().is_empty()).count() > 1,
+            "a long cue has to wrap onto further rows: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("長い場合の話です。")),
+            "the pane scrolled to the cursor, so the tail is on screen: {rows:#?}"
+        );
+        assert_eq!(cursor.as_deref(), Some(" "), "the end-of-line cursor is a blank cell");
+
+        // Back to the start: the first row carries the cue's timings again.
+        press(&mut app, KeyCode::Home, 1);
+        let (rows, _) = cue_pane(&app);
+        assert!(
+            rows[0].contains("00:00:00.000→00:00:03.000"),
+            "Home scrolls back to the head of the cue: {rows:#?}"
+        );
+        assert!(rows[0].contains("字幕がとても"), "{rows:#?}");
+    }
+
+    #[test]
+    fn escape_leaves_the_cue_untouched() {
+        let mut app = app_with_cue("そのまま");
+        app.begin_edit();
+        press(&mut app, KeyCode::Char('あ'), 1);
+        app.handle_edit_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.vtt.as_ref().unwrap().cue_text(0).as_deref(), Some("そのまま"));
+        assert!(!app.vtt_dirty);
+    }
 
     #[test]
     fn bare_name_lands_in_source_folder() {
