@@ -23,8 +23,10 @@ editty is built for a fast local workflow: it streams frames over kitty's
   stream-copy or a frame-accurate re-encode. You name the output file. If
   subtitles are loaded, a matching `<clip>.vtt` is written next to the clip with
   the cues clipped to the range and rebased to start at 0.
-- **WebVTT editing** — a cue list that follows the playhead; edit cue text, snap
-  cue start/end to the playhead, add/delete cues, and save. The original `.vtt`
+- **WebVTT editing** — a cue list that follows the playhead: the cue covering it
+  stays selected and centred, so the list scrolls along as the video plays or you
+  seek, and pausing leaves you on the cue you just heard, ready to edit. Edit cue
+  text, snap cue start/end to the playhead, add/delete cues, and save. The `.vtt`
   is backed up to `.vtt.orig` before the first overwrite. Editing a cue is a
   real line editor: the cursor moves by character or word so you can change the
   middle of a sentence, and long text wraps over as many rows as it needs — the
@@ -35,8 +37,9 @@ editty is built for a fast local workflow: it streams frames over kitty's
   then it transcribes (GPU if available, else CPU) and loads the result for
   editing. Runs in the background so the UI stays responsive.
 - **Chapters** — named markers (YouTube-style points) in their own list beside
-  the cues. Add a chapter at the playhead, name it, jump between chapters, and
-  save to a sibling `<video>.chapter.txt` (one `M:SS Title` per line). It's
+  the cues, following the playhead just as the cue list does. Add a chapter at
+  the playhead, name it, jump between chapters, and save to a sibling
+  `<video>.chapter.txt` (one `M:SS Title` per line). It's
   auto-loaded when the video opens, and clipped + rebased into a matching
   `<clip>.chapter.txt` whenever you export a segment.
 - **Non-destructive** — cuts go to new files; subtitle and chapter saves keep a

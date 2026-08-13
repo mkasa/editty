@@ -101,11 +101,17 @@ impl VttDoc {
         self.nth_cue(n).map(|c| c.payload.join("\n"))
     }
 
-    /// The cue active at `playhead` (start <= t < end), if any.
+    /// The cue active at `playhead` (start <= t < end), if any. Walks the blocks
+    /// rather than `cue_rows`, since playback asks this on every frame.
     pub fn active_cue(&self, playhead: f64) -> Option<usize> {
-        self.cue_rows()
+        self.doc
+            .blocks
             .iter()
-            .position(|&(s, e, _)| playhead >= s && playhead < e)
+            .filter_map(|b| match b {
+                VttBlock::Que(c) => Some(&c.timings),
+                _ => None,
+            })
+            .position(|t| playhead >= ts_to_secs(&t.start) && playhead < ts_to_secs(&t.end))
     }
 
     pub fn set_cue_text(&mut self, n: usize, text: &str) {

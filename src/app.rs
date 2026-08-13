@@ -189,6 +189,7 @@ impl App {
                     self.pane.set_frame(f);
                 }
                 self.playhead = clock.min(self.info.duration);
+                self.follow_playhead();
                 if finished {
                     self.playback = None;
                     self.needs_frame = true;
@@ -353,6 +354,26 @@ impl App {
         }
     }
 
+    /// Point both lists at whatever covers the playhead. Each list windows on its
+    /// selection, so this is what makes them scroll along with playback and with
+    /// a seek — and it leaves you on the cue you just heard, ready to edit.
+    ///
+    /// Held back while the inline editor is open (a commit would land on an entry
+    /// other than the one being typed into), and wherever nothing covers the
+    /// playhead — a gap between cues, or before the first chapter — since there
+    /// is nothing there to follow.
+    fn follow_playhead(&mut self) {
+        if self.mode != Mode::Normal {
+            return;
+        }
+        if let Some(i) = self.vtt.as_ref().and_then(|d| d.active_cue(self.playhead)) {
+            self.selected_cue = i;
+        }
+        if let Some(i) = self.chapters.active(self.playhead) {
+            self.selected_chapter = i;
+        }
+    }
+
     fn select_cue(&mut self, delta: i32) {
         let Some(doc) = &self.vtt else { return };
         let count = doc.cue_count();
@@ -360,11 +381,14 @@ impl App {
             return;
         }
         let next = (self.selected_cue as i32 + delta).clamp(0, count as i32 - 1) as usize;
-        self.selected_cue = next;
-        // Seek to the selected cue's start so the frame follows the selection.
+        // Seek to the selected cue's start so the frame follows the selection —
+        // before recording the selection, because the seek follows the playhead
+        // into whichever cue covers that instant, and where cues overlap that is
+        // not the one just picked.
         if let Some((start, _)) = doc.cue_times(next) {
             self.seek_to(start);
         }
+        self.selected_cue = next;
     }
 
     fn begin_edit(&mut self) {
@@ -551,10 +575,11 @@ impl App {
             return;
         }
         let next = (self.selected_chapter as i32 + delta).clamp(0, count as i32 - 1) as usize;
-        self.selected_chapter = next;
+        // Seek first, then record the selection: see the note in `select_cue`.
         if let Some(t) = self.chapters.time(next) {
             self.seek_to(t);
         }
+        self.selected_chapter = next;
     }
 
     /// Add a chapter at the playhead and start editing its title inline.
@@ -831,6 +856,9 @@ impl App {
         if (clamped - self.playhead).abs() > f64::EPSILON {
             self.playhead = clamped;
             self.needs_frame = true;
+            // Both lists follow the playhead wherever it lands, not just during
+            // playback, so a seek scrolls them to where you jumped.
+            self.follow_playhead();
         }
     }
 
@@ -892,7 +920,8 @@ mod tests {
 
     const TERM: (u16, u16) = (100, 30);
 
-    fn app_with_cue(text: &str) -> App {
+    /// An app over `cues` of `(start, end, text)`, with nothing playing.
+    fn app_with_cues(cues: &[(f64, f64, String)]) -> App {
         let info = MediaInfo {
             path: PathBuf::from("/tmp/editty-test.mp4"),
             duration: 60.0,
@@ -910,8 +939,29 @@ mod tests {
         };
         let mut app = App::new(info, None, wx);
         let mut doc = VttDoc::empty();
-        doc.add_cue(0.0, 3.0, text);
+        for (start, end, text) in cues {
+            doc.add_cue(*start, *end, text);
+        }
         app.vtt = Some(doc);
+        app
+    }
+
+    fn app_with_cue(text: &str) -> App {
+        app_with_cues(&[(0.0, 3.0, text.to_string())])
+    }
+
+    /// Twenty cues two seconds apart: cue *n* covers `2n..2n+2`, with a one
+    /// second gap left open before the last one. Chapters every ten seconds,
+    /// the first of them ten seconds in, so `0..10` is before all of them.
+    fn app_with_a_reel() -> App {
+        let mut cues: Vec<(f64, f64, String)> = (0..19)
+            .map(|i| (i as f64 * 2.0, i as f64 * 2.0 + 2.0, format!("せりふ {}", i + 1)))
+            .collect();
+        cues.push((39.0, 41.0, "さいご".to_string()));
+        let mut app = app_with_cues(&cues);
+        for i in 1..=4 {
+            app.chapters.add(i as f64 * 10.0, &format!("しょう {i}"));
+        }
         app
     }
 
@@ -997,6 +1047,119 @@ mod tests {
             "Home scrolls back to the head of the cue: {rows:#?}"
         );
         assert!(rows[0].contains("字幕がとても"), "{rows:#?}");
+    }
+
+    #[test]
+    fn playback_carries_the_selection_to_the_spoken_cue() {
+        let mut app = app_with_a_reel();
+        assert_eq!(app.selected_cue, 0);
+
+        app.playhead = 31.5; // inside cue 16 (30..32)
+        app.follow_playhead();
+        assert_eq!(app.selected_cue, 15);
+
+        // Playing on through the reel, the selection keeps up.
+        for t in [33.0, 35.0, 37.0] {
+            app.playhead = t;
+            app.follow_playhead();
+        }
+        assert_eq!(app.selected_cue, 18, "cue 19 covers 36..38");
+
+        // A gap between cues has nothing to follow: stay on the last one heard.
+        app.playhead = 38.5;
+        app.follow_playhead();
+        assert_eq!(app.selected_cue, 18);
+
+        app.playhead = 40.0;
+        app.follow_playhead();
+        assert_eq!(app.selected_cue, 19);
+    }
+
+    #[test]
+    fn the_chapter_selection_follows_too() {
+        let mut app = app_with_a_reel();
+        assert_eq!(app.selected_chapter, 0);
+
+        app.playhead = 25.0; // chapter 2 runs from 20 until 30
+        app.follow_playhead();
+        assert_eq!(app.selected_chapter, 1);
+
+        // Before the first chapter there is nothing to follow: stay put.
+        app.playhead = 5.0;
+        app.follow_playhead();
+        assert_eq!(app.selected_chapter, 1);
+    }
+
+    #[test]
+    fn a_seek_scrolls_both_lists_to_where_it_landed() {
+        let mut app = app_with_a_reel();
+        app.seek_to(31.5);
+        assert_eq!(app.selected_cue, 15, "cue 16 covers 30..32");
+        assert_eq!(app.selected_chapter, 2, "chapter 3 runs from 30");
+
+        // Seeking back carries them both with it.
+        app.seek_to(3.0);
+        assert_eq!(app.selected_cue, 1);
+        assert_eq!(app.selected_chapter, 2, "nothing precedes chapter 1 at 3s");
+    }
+
+    #[test]
+    fn navigation_lands_on_the_entry_it_picked_despite_overlap() {
+        // A cue that spans a shorter one: seeking to the short cue's start puts
+        // the playhead inside the long one too, and `active_cue` prefers the
+        // first. Selecting must still land on the cue that was picked.
+        let mut app = app_with_cues(&[
+            (0.0, 10.0, "ながい".to_string()),
+            (5.0, 6.0, "みじかい".to_string()),
+        ]);
+        app.apply(Action::CueNext);
+        assert_eq!(app.selected_cue, 1);
+        assert_eq!(app.playhead, 5.0);
+
+        // Same for chapters, whose "active" is the last one at or before the
+        // playhead — seeking exactly onto one is the boundary case.
+        app.chapters.add(0.0, "いち");
+        app.chapters.add(20.0, "に");
+        app.apply(Action::ChapterNext);
+        assert_eq!(app.selected_chapter, 1);
+        assert_eq!(app.playhead, 20.0);
+    }
+
+    #[test]
+    fn following_holds_off_while_the_editor_is_open() {
+        let mut app = app_with_a_reel();
+        app.begin_edit(); // editing cue 1
+        app.playhead = 31.5;
+        app.follow_playhead();
+        assert_eq!(
+            app.selected_cue, 0,
+            "the commit has to land on the cue being typed into"
+        );
+
+        // Once the edit is committed, following resumes.
+        app.handle_edit_key(KeyEvent::from(KeyCode::Enter));
+        app.follow_playhead();
+        assert_eq!(app.selected_cue, 15);
+    }
+
+    #[test]
+    fn the_cue_list_scrolls_along_with_playback() {
+        let mut app = app_with_a_reel();
+        let (rows, _) = cue_pane(&app);
+        assert!(rows[0].contains("せりふ 1"), "starts at the top: {rows:#?}");
+
+        app.playhead = 31.5;
+        app.follow_playhead();
+        let (rows, _) = cue_pane(&app);
+        let shown = rows.join("\n");
+        assert!(
+            shown.contains("せりふ 16"),
+            "the spoken cue has to be on screen: {rows:#?}"
+        );
+        assert!(
+            !shown.contains("せりふ 1 "),
+            "and the top of the list has scrolled away: {rows:#?}"
+        );
     }
 
     #[test]
