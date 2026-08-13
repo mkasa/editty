@@ -31,6 +31,11 @@ editty is built for a fast local workflow: it streams frames over kitty's
   real line editor: the cursor moves by character or word so you can change the
   middle of a sentence, and long text wraps over as many rows as it needs — the
   list scrolls with the cursor, so the end of a long cue is always reachable.
+- **Search** — `/` finds a word in the cue text (case-insensitive). Every
+  occurrence is highlighted in the list, and `Tab` / `Shift-Tab` walk the
+  matching cues — selecting each one and taking the video to it — wrapping at
+  the ends and counting off "match 3 of 7" in the status bar. Searching for
+  nothing clears it again.
 - **Subtitle generation (WhisperX)** — with no subtitles loaded, press `G` to
   transcribe the audio with [WhisperX](https://github.com/m-bain/whisperX). On
   first use it creates a dedicated `whisperx` conda env and installs WhisperX;
@@ -142,6 +147,8 @@ Press `?` any time for this list.
 | `n` / `d` | new cue at playhead / delete selected cue |
 | `s` | save the `.vtt` (backs up the original to `.vtt.orig`) |
 | `G` | generate subtitles with WhisperX (when none are loaded) |
+| `/` | find a word in the cue text (`Enter` searches, `Esc` cancels) |
+| `Tab` / `Shift-Tab` | jump to the next / previous match |
 | `m` | new chapter at playhead (then type a title) |
 | `e` | edit selected chapter title |
 | `{` / `}` | select previous / next chapter (seeks to it) |

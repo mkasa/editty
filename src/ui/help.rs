@@ -28,9 +28,12 @@ const LEFT: &[(&str, &str)] = &[
     ("X", "export precise"),
     ("", "  then name it, Enter"),
     ("", ""),
+    ("", "Search"),
+    ("/", "find in cue text"),
+    ("Tab/S-Tab", "next / prev match"),
+    ("", ""),
     ("", "General"),
-    ("?", "toggle this help"),
-    ("q", "quit"),
+    ("?  q", "help / quit"),
 ];
 
 const RIGHT: &[(&str, &str)] = &[
@@ -57,7 +60,7 @@ const RIGHT: &[(&str, &str)] = &[
     ("Ctrl-U", "clear the line"),
 ];
 
-const KEY_COL: usize = 8;
+const KEY_COL: usize = 9;
 
 fn rows_to_lines(rows: &[(&str, &str)]) -> Vec<Line<'static>> {
     rows.iter()

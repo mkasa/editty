@@ -4,7 +4,7 @@
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::app::{App, EditTarget, Mode};
@@ -77,11 +77,6 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         |i| {
             let (s, e, text) = &rows[i];
             let selected = i == selected_cue;
-            let content = format!(
-                "{}{}",
-                prefix(i, *s, *e, selected),
-                text.replace('\n', " ")
-            );
 
             let mut style = Style::default();
             if active == Some(i) {
@@ -92,7 +87,14 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD | Modifier::REVERSED);
             }
-            Line::styled(content, style)
+
+            let mut spans = vec![Span::styled(prefix(i, *s, *e, selected), style)];
+            spans.extend(super::highlight_spans(
+                &text.replace('\n', " "),
+                &app.search,
+                style,
+            ));
+            Line::from(spans)
         },
     );
 

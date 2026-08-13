@@ -16,6 +16,7 @@ use crate::ffmpeg::frame::{self, fit_dims};
 use crate::ffmpeg::playback::Playback;
 use crate::keymap::{self, Action};
 use crate::player::{CellSize, KittyPane, Transport, VideoBackend, query_cell_size};
+use crate::search;
 use crate::textinput::TextInput;
 use crate::ui;
 use crate::vtt::VttDoc;
@@ -28,6 +29,8 @@ pub enum Mode {
     Editing,
     /// Typing the output filename for an export; keys feed the edit buffer.
     Naming,
+    /// Typing a string to find in the cue text; keys feed the edit buffer.
+    Searching,
 }
 
 /// What the inline editor ([`Mode::Editing`]) is currently editing.
@@ -57,8 +60,12 @@ pub struct App {
     pub mode: Mode,
     /// Which list the inline editor is editing (valid while `mode == Editing`).
     pub edit_target: EditTarget,
-    /// The line being edited, with its cursor (also used by the naming prompt).
+    /// The line being edited, with its cursor (also used by the naming and
+    /// search prompts).
     pub edit_input: TextInput,
+    /// The string being searched for, highlighted wherever it occurs in the cue
+    /// list. Empty when no search is set.
+    pub search: String,
     pub show_help: bool,
     pub playhead: f64,
     pub mark_in: Option<f64>,
@@ -150,6 +157,7 @@ impl App {
             mode: Mode::Normal,
             edit_target: EditTarget::Cue,
             edit_input: TextInput::default(),
+            search: String::new(),
             show_help: false,
             playhead: 0.0,
             mark_in: None,
@@ -234,6 +242,7 @@ impl App {
                     Event::Key(k) if k.kind == KeyEventKind::Press => match self.mode {
                         Mode::Editing => self.handle_edit_key(k),
                         Mode::Naming => self.handle_naming_key(k),
+                        Mode::Searching => self.handle_search_key(k),
                         Mode::Normal => {
                             if self.show_help {
                                 // Any key dismisses help; restore the frame.
@@ -337,6 +346,9 @@ impl App {
             Action::CueNext => self.select_cue(1),
             Action::CuePrev => self.select_cue(-1),
             Action::EditCue => self.begin_edit(),
+            Action::SearchStart => self.begin_search(),
+            Action::SearchNext => self.find(true, false),
+            Action::SearchPrev => self.find(false, false),
             Action::SnapStart => self.snap_cue(true),
             Action::SnapEnd => self.snap_cue(false),
             Action::NewCue => self.new_cue(),
@@ -381,14 +393,90 @@ impl App {
             return;
         }
         let next = (self.selected_cue as i32 + delta).clamp(0, count as i32 - 1) as usize;
-        // Seek to the selected cue's start so the frame follows the selection —
-        // before recording the selection, because the seek follows the playhead
-        // into whichever cue covers that instant, and where cues overlap that is
-        // not the one just picked.
-        if let Some((start, _)) = doc.cue_times(next) {
+        self.go_to_cue(next);
+    }
+
+    /// Select cue `i` and put the playhead on its start, so the frame follows
+    /// the selection. Seeks *before* recording the selection: the seek follows
+    /// the playhead into whichever cue covers that instant, and where cues
+    /// overlap that is not the one asked for.
+    fn go_to_cue(&mut self, i: usize) {
+        if let Some((start, _)) = self.vtt.as_ref().and_then(|d| d.cue_times(i)) {
             self.seek_to(start);
         }
-        self.selected_cue = next;
+        self.selected_cue = i;
+    }
+
+    /// Ask for a string to find in the cue text. Committing an empty one clears
+    /// the search (and with it the highlight).
+    fn begin_search(&mut self) {
+        if self.vtt.is_none() {
+            self.status = "no subtitles loaded".into();
+            return;
+        }
+        self.edit_input = TextInput::default();
+        self.mode = Mode::Searching;
+        self.status = "find in cues — Enter to search, Esc to cancel".into();
+    }
+
+    fn handle_search_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                self.search = self.edit_input.take();
+                self.mode = Mode::Normal;
+                if self.search.is_empty() {
+                    self.status = "search cleared".into();
+                } else {
+                    // Include the selected cue: searching for what is on screen
+                    // shouldn't skip past it.
+                    self.find(true, true);
+                }
+            }
+            KeyCode::Esc => {
+                self.edit_input.clear();
+                self.mode = Mode::Normal;
+                self.status = "search cancelled".into();
+            }
+            _ => self.edit_input.handle_key(key),
+        }
+    }
+
+    /// Jump to the next (or previous) cue whose text matches the search,
+    /// wrapping around the ends. `include_current` keeps the selected cue
+    /// eligible, which is what a freshly typed search wants.
+    fn find(&mut self, forward: bool, include_current: bool) {
+        if self.search.is_empty() {
+            self.status = "no search — press / first".into();
+            return;
+        }
+        let Some(doc) = &self.vtt else {
+            self.status = "no subtitles loaded".into();
+            return;
+        };
+        let hits: Vec<usize> = doc
+            .cue_rows()
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, text))| search::contains(text, &self.search))
+            .map(|(i, _)| i)
+            .collect();
+        let Some(&first) = hits.first() else {
+            self.status = format!("no match for “{}”", self.search);
+            return;
+        };
+
+        let cur = self.selected_cue;
+        let next = if forward {
+            let from = hits.iter().find(|&&i| if include_current { i >= cur } else { i > cur });
+            *from.unwrap_or(&first)
+        } else {
+            let from = hits.iter().rev().find(|&&i| if include_current { i <= cur } else { i < cur });
+            *from.unwrap_or(hits.last().expect("hits is not empty"))
+        };
+
+        let nth = hits.iter().position(|&i| i == next).expect("next is a hit") + 1;
+        self.go_to_cue(next);
+        self.status = format!("match {nth} of {} for “{}”", hits.len(), self.search);
     }
 
     fn begin_edit(&mut self) {
@@ -1160,6 +1248,108 @@ mod tests {
             !shown.contains("せりふ 1 "),
             "and the top of the list has scrolled away: {rows:#?}"
         );
+    }
+
+    /// Four cues, two of them mentioning the projector.
+    fn app_for_search() -> App {
+        app_with_cues(&[
+            (0.0, 2.0, "はじめまして".to_string()),
+            (2.0, 4.0, "プロジェクターの話".to_string()),
+            (4.0, 6.0, "べつの話です".to_string()),
+            (6.0, 8.0, "プロジェクターをつかう".to_string()),
+        ])
+    }
+
+    /// Type a search the way the keyboard does: `/`, the text, Enter.
+    fn type_search(app: &mut App, query: &str) {
+        app.apply(Action::SearchStart);
+        assert_eq!(app.mode, Mode::Searching);
+        for c in query.chars() {
+            app.handle_search_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        app.handle_search_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// The text of every highlighted (yellow) cell in the subtitle pane.
+    fn highlighted(app: &App) -> String {
+        let (w, h) = TERM;
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+        terminal.draw(|f| ui::render(f, app)).expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        let pane = ui::inner(ui::layout(Rect::new(0, 0, w, h)).cues);
+
+        let mut out = String::new();
+        for dy in 0..pane.height {
+            let mut dx = 0;
+            while dx < pane.width {
+                let cell = &buf[(pane.x + dx, pane.y + dy)];
+                if cell.bg == ratatui::style::Color::Yellow {
+                    out.push_str(cell.symbol());
+                }
+                dx += (display_width(cell.symbol()) as u16).max(1);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_search_jumps_to_the_matching_cue() {
+        let mut app = app_for_search();
+        type_search(&mut app, "プロジェクター");
+
+        assert_eq!(app.selected_cue, 1);
+        assert_eq!(app.playhead, 2.0, "and the video goes there too");
+        assert!(app.status.contains("match 1 of 2"), "{}", app.status);
+
+        // Tab / Shift-Tab walk the matches, wrapping at both ends.
+        app.apply(Action::SearchNext);
+        assert_eq!(app.selected_cue, 3);
+        assert!(app.status.contains("match 2 of 2"), "{}", app.status);
+        app.apply(Action::SearchNext);
+        assert_eq!(app.selected_cue, 1, "wrapped back to the first match");
+        app.apply(Action::SearchPrev);
+        assert_eq!(app.selected_cue, 3, "and wrapped the other way");
+    }
+
+    #[test]
+    fn a_search_ignores_case_and_reports_a_miss() {
+        let mut app = app_with_cues(&[
+            (0.0, 2.0, "nothing here".to_string()),
+            (2.0, 4.0, "the UTOR system".to_string()),
+        ]);
+        type_search(&mut app, "utor");
+        assert_eq!(app.selected_cue, 1);
+
+        type_search(&mut app, "ビルドリ");
+        assert_eq!(app.selected_cue, 1, "a miss leaves the selection alone");
+        assert!(app.status.contains("no match"), "{}", app.status);
+    }
+
+    #[test]
+    fn an_empty_search_clears_it_and_escape_keeps_the_old_one() {
+        let mut app = app_for_search();
+        type_search(&mut app, "プロジェクター");
+        assert!(!highlighted(&app).is_empty());
+
+        // Esc while typing a new one keeps the search that was already set.
+        app.apply(Action::SearchStart);
+        app.handle_search_key(KeyEvent::from(KeyCode::Char('x')));
+        app.handle_search_key(KeyEvent::from(KeyCode::Esc));
+        assert_eq!(app.search, "プロジェクター");
+
+        type_search(&mut app, "");
+        assert_eq!(app.search, "");
+        assert_eq!(highlighted(&app), "", "clearing takes the highlight with it");
+    }
+
+    #[test]
+    fn the_matched_word_is_highlighted_wherever_it_shows() {
+        let mut app = app_for_search();
+        type_search(&mut app, "プロジェクター");
+        // Both matching cues are on screen, so the word is marked twice — and
+        // nothing else is.
+        assert_eq!(highlighted(&app), "プロジェクタープロジェクター");
     }
 
     #[test]

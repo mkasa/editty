@@ -25,6 +25,11 @@ pub enum Action {
     CueNext,
     CuePrev,
     EditCue,
+    /// Open the prompt for a string to find in the cue text.
+    SearchStart,
+    /// Jump to the next / previous cue matching the current search.
+    SearchNext,
+    SearchPrev,
     SnapStart,
     SnapEnd,
     NewCue,
@@ -64,6 +69,9 @@ pub fn map(key: KeyEvent) -> Action {
         KeyCode::Char('j') | KeyCode::Down => CueNext,
         KeyCode::Char('k') | KeyCode::Up => CuePrev,
         KeyCode::Enter => EditCue,
+        KeyCode::Char('/') => SearchStart,
+        KeyCode::Tab => SearchNext,
+        KeyCode::BackTab => SearchPrev,
         KeyCode::Char('[') => SnapStart,
         KeyCode::Char(']') => SnapEnd,
         KeyCode::Char('n') => NewCue,

@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::app::App;
@@ -95,6 +95,33 @@ pub fn cursor_spans(
             ));
         }
         None => spans.push(Span::styled(" ", inverted)),
+    }
+    spans
+}
+
+/// Spans for `text` with every occurrence of `needle` marked. The marker keeps
+/// its own colours rather than modifying `style`, so a hit stands out the same
+/// on an ordinary row as on the reverse-video selected one.
+pub fn highlight_spans(text: &str, needle: &str, style: Style) -> Vec<Span<'static>> {
+    let hits = crate::search::matches(text, needle);
+    if hits.is_empty() {
+        return vec![Span::styled(text.to_string(), style)];
+    }
+    let marked = Style::default()
+        .bg(Color::Yellow)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = Vec::with_capacity(hits.len() * 2 + 1);
+    let mut at = 0;
+    for hit in hits {
+        if at < hit.start {
+            spans.push(Span::styled(text[at..hit.start].to_string(), style));
+        }
+        at = hit.end;
+        spans.push(Span::styled(text[hit].to_string(), marked));
+    }
+    if at < text.len() {
+        spans.push(Span::styled(text[at..].to_string(), style));
     }
     spans
 }

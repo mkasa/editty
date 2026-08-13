@@ -9,39 +9,52 @@ use ratatui::widgets::Paragraph;
 use crate::app::{App, Mode};
 use crate::util::{fmt_clock, fmt_speed};
 
+/// A prompt that takes over the whole bar: badge, label, the line being typed
+/// with its cursor, then the keys that end it.
+fn prompt(f: &mut Frame, app: &App, area: Rect, badge: &str, label: &str, keys: &str) {
+    let mut spans = vec![
+        Span::styled(
+            badge.to_string(),
+            Style::default()
+                .bg(Color::Magenta)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(label.to_string()),
+    ];
+    let typed = app.edit_input.text();
+    spans.extend(super::cursor_spans(
+        typed,
+        0..typed.len(),
+        Some(app.edit_input.cursor()),
+        Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(Span::styled(
+        format!("   {keys}"),
+        Style::default().fg(Color::DarkGray),
+    ));
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
 pub fn render(f: &mut Frame, app: &App, area: Rect) {
-    // Naming an export takes over the bar with the editable filename prompt.
-    if app.mode == Mode::Naming {
-        let mut spans = vec![
-            Span::styled(
-                " NAME ",
-                Style::default()
-                    .bg(Color::Magenta)
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" save clip as: "),
-        ];
-        let name = app.edit_input.text();
-        spans.extend(super::cursor_spans(
-            name,
-            0..name.len(),
-            Some(app.edit_input.cursor()),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            "   Enter cut · Esc cancel · Ctrl-U clear",
-            Style::default().fg(Color::DarkGray),
-        ));
-        f.render_widget(Paragraph::new(Line::from(spans)), area);
-        return;
+    // Naming an export or typing a search takes the bar over entirely.
+    match app.mode {
+        Mode::Naming => {
+            let keys = "Enter cut · Esc cancel · Ctrl-U clear";
+            return prompt(f, app, area, " NAME ", " save clip as: ", keys);
+        }
+        Mode::Searching => {
+            let keys = "Enter find · Esc cancel · empty clears";
+            return prompt(f, app, area, " FIND ", " find in cues: ", keys);
+        }
+        _ => {}
     }
 
     let mut parts: Vec<Span> = Vec::new();
 
     let (badge, badge_bg) = match app.mode {
         Mode::Editing => (" EDIT ", Color::Magenta),
-        Mode::Naming => (" NAME ", Color::Magenta),
+        Mode::Naming | Mode::Searching => (" NAME ", Color::Magenta),
         Mode::Normal if app.is_playing() => (" ▶ PLAY ", Color::Green),
         Mode::Normal => (" ▮▮ PAUSE ", Color::Blue),
     };
@@ -85,9 +98,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let hint = match app.mode {
         Mode::Editing => " ←/→ move  Ctrl-←/→ word  Home/End  BS/Del  Enter commit  Esc cancel ",
-        Mode::Naming => "",
+        Mode::Naming | Mode::Searching => "",
         Mode::Normal => {
-            " Space play  -/= speed  ←/→ seek  i/o mark  x/X cut  j/k cue  s save  ? help  q quit "
+            " Space play  ←/→ seek  i/o mark  x/X cut  j/k cue  / find  s save  ? help  q quit "
         }
     };
     parts.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
