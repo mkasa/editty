@@ -227,7 +227,7 @@ impl App {
             if self.show_help {
                 self.pane.clear(&mut out).ok();
             } else if self.kitty_ok {
-                let vrect = ui::inner(ui::layout(self.area).video);
+                let vrect = self.picture_rect();
                 self.pane.present(&mut out, vrect, self.cell).ok();
             }
 
@@ -783,6 +783,10 @@ impl App {
                             self.vtt_path = Some(path.clone());
                             self.vtt_dirty = false;
                             self.selected_cue = 0;
+                            // Cues arriving open the caption strip, which takes
+                            // its rows from the picture: refit the frame to it.
+                            self.pane.invalidate();
+                            self.needs_frame = true;
                             self.status =
                                 format!("generated {n} cues → {}", path.display());
                         }
@@ -868,6 +872,16 @@ impl App {
         })
     }
 
+    /// Whether there are cues to caption the video with.
+    pub fn has_cues(&self) -> bool {
+        self.vtt.as_ref().is_some_and(|d| d.cue_count() > 0)
+    }
+
+    /// The rect the video frame is painted into: the pane less the caption strip.
+    fn picture_rect(&self) -> Rect {
+        ui::video_split(ui::layout(self.area).video, self.has_cues()).0
+    }
+
     pub fn is_playing(&self) -> bool {
         self.playback.is_some()
     }
@@ -899,7 +913,7 @@ impl App {
         if self.playhead >= self.info.duration {
             self.playhead = 0.0;
         }
-        let vrect = ui::inner(ui::layout(self.area).video);
+        let vrect = self.picture_rect();
         let max_w = vrect.width as u32 * self.cell.w as u32;
         let max_h = vrect.height as u32 * self.cell.h as u32;
         if max_w < 2 || max_h < 2 {
@@ -951,7 +965,7 @@ impl App {
     }
 
     fn load_frame(&mut self) {
-        let vrect = ui::inner(ui::layout(self.area).video);
+        let vrect = self.picture_rect();
         let max_w = vrect.width as u32 * self.cell.w as u32;
         let max_h = vrect.height as u32 * self.cell.h as u32;
         if max_w < 2 || max_h < 2 {
@@ -1062,11 +1076,20 @@ mod tests {
     /// Draw the whole UI and read the subtitle pane back: its rows of text, and
     /// the symbol in the inverted (cursor) cell if there is one.
     fn cue_pane(app: &App) -> (Vec<String>, Option<String>) {
+        pane_text(app, |areas| ui::inner(areas.cues))
+    }
+
+    /// The caption strip at the foot of the video pane.
+    fn caption_rows(app: &App) -> Vec<String> {
+        pane_text(app, |areas| ui::video_split(areas.video, true).1).0
+    }
+
+    fn pane_text(app: &App, pick: fn(&ui::Areas) -> Rect) -> (Vec<String>, Option<String>) {
         let (w, h) = TERM;
         let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
         terminal.draw(|f| ui::render(f, app)).expect("draw");
         let buf = terminal.backend().buffer().clone();
-        let pane = ui::inner(ui::layout(Rect::new(0, 0, w, h)).cues);
+        let pane = pick(&ui::layout(Rect::new(0, 0, w, h)));
 
         let mut cursor = None;
         let mut rows = Vec::new();
@@ -1135,6 +1158,48 @@ mod tests {
             "Home scrolls back to the head of the cue: {rows:#?}"
         );
         assert!(rows[0].contains("字幕がとても"), "{rows:#?}");
+    }
+
+    #[test]
+    fn the_video_pane_captions_the_cue_under_the_playhead() {
+        // A sentence far too long for the 60%-wide cue list to show whole.
+        let long = "これは非常に長い字幕で、字幕ウィンドウの右端では見切れてしまう\
+                    ぐらいの長さがあります。";
+        let mut app = app_with_cues(&[
+            (0.0, 2.0, "みじかい".to_string()),
+            (2.0, 6.0, long.to_string()),
+        ]);
+
+        app.playhead = 0.5;
+        assert_eq!(caption_rows(&app).join("").trim(), "みじかい");
+
+        app.playhead = 3.0;
+        let shown = caption_rows(&app).join("");
+        assert_eq!(shown.replace(' ', ""), long, "the whole cue, wrapped");
+
+        // The cue list really does cut it off, which is what the strip is for.
+        let (rows, _) = cue_pane(&app);
+        assert!(
+            !rows.iter().any(|r| r.contains("長さがあります")),
+            "the list shows only the head of it: {rows:#?}"
+        );
+
+        // Between cues a player shows nothing, and so does this.
+        app.playhead = 8.0;
+        assert_eq!(caption_rows(&app).join("").trim(), "");
+    }
+
+    #[test]
+    fn a_caption_too_long_even_for_the_strip_says_so() {
+        let huge = "字".repeat(400);
+        let mut app = app_with_cues(&[(0.0, 4.0, huge)]);
+        app.playhead = 1.0;
+        let shown = caption_rows(&app);
+        assert_eq!(shown.len(), 3, "the strip is three rows");
+        assert!(
+            shown.last().unwrap().trim_end().ends_with('…'),
+            "a clipped caption must not pass for a whole one: {shown:#?}"
+        );
     }
 
     #[test]

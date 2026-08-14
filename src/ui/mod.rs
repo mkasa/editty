@@ -50,6 +50,34 @@ pub fn layout(area: Rect) -> Areas {
     }
 }
 
+/// Rows the caption strip takes at the foot of the video pane, and the rows the
+/// picture keeps whatever happens. Three lines of full-pane width hold a long
+/// sentence that the cue list, at 60% width, can only show the head of.
+const CAPTION_ROWS: u16 = 3;
+const PICTURE_ROWS: u16 = 3;
+
+/// Split the video pane into the picture and the caption strip beneath it.
+///
+/// The strip only exists once there are subtitles to put in it, and its height
+/// depends on nothing but the terminal size — the picture is scaled to the rect
+/// it gets when a stream starts, so a strip that grew with the text would leave
+/// the running video overlapping it.
+pub fn video_split(video: Rect, captioned: bool) -> (Rect, Rect) {
+    let inner = inner(video);
+    let rows = if captioned {
+        CAPTION_ROWS.min(inner.height.saturating_sub(PICTURE_ROWS))
+    } else {
+        0
+    };
+    let picture = Rect { height: inner.height - rows, ..inner };
+    let caption = Rect {
+        y: inner.y + picture.height,
+        height: rows,
+        ..inner
+    };
+    (picture, caption)
+}
+
 /// Inset by a 1-cell border, saturating so it never underflows.
 pub fn inner(rect: Rect) -> Rect {
     Rect {
@@ -246,6 +274,29 @@ mod tests {
 
     fn block(n: usize) -> Vec<Line<'static>> {
         (0..n).map(|k| Line::from(format!("edit{k}"))).collect()
+    }
+
+    #[test]
+    fn the_caption_strip_never_starves_the_picture() {
+        let pane = Rect::new(0, 0, 40, 10); // 8 rows inside the border
+        let (picture, strip) = video_split(pane, true);
+        assert_eq!((picture.height, strip.height), (5, 3));
+        assert_eq!(strip.y, picture.y + picture.height, "the strip sits below");
+
+        // With no subtitles the picture keeps the whole pane.
+        let (picture, strip) = video_split(pane, false);
+        assert_eq!(picture, inner(pane));
+        assert_eq!(strip.height, 0);
+
+        // However little room there is, the split accounts for every row and
+        // leaves the picture what it can.
+        for h in 0..12u16 {
+            let pane = Rect::new(0, 0, 40, h);
+            let (picture, strip) = video_split(pane, true);
+            assert_eq!(picture.height + strip.height, inner(pane).height, "h={h}");
+            assert!(strip.height <= 3, "h={h}");
+            assert!(picture.height >= inner(pane).height.min(3), "h={h}");
+        }
     }
 
     #[test]

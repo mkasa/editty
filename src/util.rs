@@ -2,9 +2,10 @@
 //! `f64` seconds; these convert to/from the string forms ffmpeg and WebVTT use.
 
 use std::io;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// How many terminal cells `s` occupies (CJK characters take two).
 pub fn display_width(s: &str) -> usize {
@@ -34,6 +35,41 @@ pub fn backup_once(path: &Path) -> io::Result<Option<PathBuf>> {
     }
     std::fs::copy(path, &backup)?;
     Ok(Some(backup))
+}
+
+/// Wrap `text` to `width` columns, breaking after a blank when the line has one
+/// (so words stay whole) and mid-run otherwise. The blank stays on the line it
+/// ended, and no byte is ever dropped: the ranges tile the whole string, which
+/// is what lets the caller map a cursor offset onto a line.
+pub fn wrap(text: &str, width: usize) -> Vec<Range<usize>> {
+    let width = width.max(1);
+    let mut lines: Vec<Range<usize>> = Vec::new();
+    let mut start = 0;
+    let mut col = 0;
+    // Byte offset just past the last blank on the current line, if any.
+    let mut after_blank: Option<usize> = None;
+
+    for (i, c) in text.char_indices() {
+        let cw = c.width().unwrap_or(0);
+        // `i > start` keeps at least one character per line, so a character
+        // wider than the pane can't spin here forever.
+        if col + cw > width && i > start {
+            let brk = match after_blank {
+                Some(b) if b > start && b < i => b,
+                _ => i,
+            };
+            lines.push(start..brk);
+            start = brk;
+            after_blank = None;
+            col = display_width(&text[start..i]);
+        }
+        col += cw;
+        if c.is_whitespace() {
+            after_blank = Some(i + c.len_utf8());
+        }
+    }
+    lines.push(start..text.len());
+    lines
 }
 
 /// Format seconds as `HH:MM:SS.mmm` (WebVTT-style, always with hours).
@@ -79,6 +115,52 @@ pub fn fmt_speed(s: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wrapping_measures_cells_not_chars() {
+        // Each kana is two cells wide, so four fit in eight columns.
+        let text = "あいうえおか";
+        let lines = wrap(text, 8);
+        assert_eq!(
+            lines.iter().map(|r| &text[r.clone()]).collect::<Vec<_>>(),
+            vec!["あいうえ", "おか"]
+        );
+    }
+
+    #[test]
+    fn wrapping_keeps_words_whole_when_it_can() {
+        let text = "the quick brown fox";
+        let lines = wrap(text, 10);
+        assert_eq!(
+            lines.iter().map(|r| &text[r.clone()]).collect::<Vec<_>>(),
+            vec!["the quick ", "brown fox"]
+        );
+    }
+
+    #[test]
+    fn wrapping_breaks_a_word_too_long_to_fit() {
+        let text = "ab wwwwwwwwwwww";
+        let lines = wrap(text, 6);
+        // Contiguous, and no line is empty, however long the word is.
+        assert!(lines.windows(2).all(|w| w[0].end == w[1].start));
+        assert_eq!(lines.first().unwrap().start, 0);
+        assert_eq!(lines.last().unwrap().end, text.len());
+        assert!(lines.iter().all(|r| !r.is_empty()));
+    }
+
+    #[test]
+    fn wrapping_tiles_the_whole_text() {
+        let text = "字幕は長くなることがあります。 with some latin too";
+        for width in [1, 2, 3, 7, 40] {
+            let lines = wrap(text, width);
+            assert_eq!(lines.first().unwrap().start, 0, "width {width}");
+            assert_eq!(lines.last().unwrap().end, text.len(), "width {width}");
+            assert!(
+                lines.windows(2).all(|w| w[0].end == w[1].start),
+                "width {width} left a gap"
+            );
+        }
+    }
 
     #[test]
     fn backup_once_preserves_pristine_original() {

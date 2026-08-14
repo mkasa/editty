@@ -19,6 +19,11 @@ editty is built for a fast local workflow: it streams frames over kitty's
   graphics protocol. Seek by seconds, jump by percentage, or step exact frames.
 - **Playback with audio** — `Space` plays from the playhead with synced sound;
   variable speed from **0.25× to 2×**, pitch-preserved (like YouTube).
+- **Subtitles on the picture** — with subtitles loaded, the cue under the
+  playhead is captioned across the foot of the video pane: full terminal width,
+  centred, wrapped over up to three lines. The cue list is only 60% wide and
+  truncates, so this is where a long sentence can actually be read. The picture
+  is scaled to the space above the strip, never behind it.
 - **Cutting** — mark an IN and OUT point and export the segment, either a fast
   stream-copy or a frame-accurate re-encode. You name the output file. If
   subtitles are loaded, a matching `<clip>.vtt` is written next to the clip with
