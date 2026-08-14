@@ -31,6 +31,8 @@ pub enum Mode {
     Naming,
     /// Typing a string to find in the cue text; keys feed the edit buffer.
     Searching,
+    /// Typing what to replace the search with; keys feed the edit buffer.
+    Replacing,
 }
 
 /// What the inline editor ([`Mode::Editing`]) is currently editing.
@@ -90,6 +92,8 @@ pub struct App {
     pending_export: Option<PendingExport>,
     /// An export awaiting overwrite confirmation.
     pending_cut: Option<PendingCut>,
+    /// A replacement awaiting confirmation: what to put in place of the search.
+    pending_replace: Option<String>,
     /// WhisperX subtitle generation config (from the CLI).
     wx_cfg: WhisperXConfig,
     /// A running WhisperX subtitle-generation job, if any.
@@ -175,6 +179,7 @@ impl App {
             quit_armed: false,
             pending_export: None,
             pending_cut: None,
+            pending_replace: None,
             wx_cfg,
             whisperx: None,
         }
@@ -243,12 +248,15 @@ impl App {
                         Mode::Editing => self.handle_edit_key(k),
                         Mode::Naming => self.handle_naming_key(k),
                         Mode::Searching => self.handle_search_key(k),
+                        Mode::Replacing => self.handle_replace_key(k),
                         Mode::Normal => {
                             if self.show_help {
                                 // Any key dismisses help; restore the frame.
                                 self.show_help = false;
                                 self.pane.invalidate();
-                            } else if self.pending_cut.is_some() {
+                            } else if self.pending_cut.is_some()
+                                || self.pending_replace.is_some()
+                            {
                                 self.handle_confirm(k.code);
                             } else {
                                 self.apply(keymap::map(k));
@@ -349,6 +357,7 @@ impl App {
             Action::SearchStart => self.begin_search(),
             Action::SearchNext => self.find(true, false),
             Action::SearchPrev => self.find(false, false),
+            Action::ReplaceStart => self.begin_replace(),
             Action::SnapStart => self.snap_cue(true),
             Action::SnapEnd => self.snap_cue(false),
             Action::NewCue => self.new_cue(),
@@ -439,6 +448,86 @@ impl App {
             }
             _ => self.edit_input.handle_key(key),
         }
+    }
+
+    /// Ask what to put in place of the current search, everywhere it occurs.
+    fn begin_replace(&mut self) {
+        if self.vtt.is_none() {
+            self.status = "no subtitles loaded".into();
+            return;
+        }
+        if self.search.is_empty() {
+            self.status = "nothing to replace — press / to find something first".into();
+            return;
+        }
+        self.edit_input = TextInput::default();
+        self.mode = Mode::Replacing;
+        self.status = format!("replace “{}” with — Enter to go on, Esc to cancel", self.search);
+    }
+
+    fn handle_replace_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Enter => {
+                let with = self.edit_input.take();
+                self.mode = Mode::Normal;
+                // Nothing here can be undone, so say what it comes to and ask.
+                let (hits, cues) = self.count_matches();
+                if hits == 0 {
+                    self.status = format!("no match for “{}”", self.search);
+                    return;
+                }
+                self.status = format!(
+                    "replace {hits} in {cues} cue{} with “{with}”? y/n",
+                    if cues == 1 { "" } else { "s" }
+                );
+                self.pending_replace = Some(with);
+            }
+            KeyCode::Esc => {
+                self.edit_input.clear();
+                self.mode = Mode::Normal;
+                self.status = "replace cancelled".into();
+            }
+            _ => self.edit_input.handle_key(key),
+        }
+    }
+
+    /// How many occurrences of the search there are, and in how many cues.
+    fn count_matches(&self) -> (usize, usize) {
+        let Some(doc) = &self.vtt else {
+            return (0, 0);
+        };
+        doc.cue_rows()
+            .iter()
+            .map(|(_, _, text)| search::matches(text, &self.search).len())
+            .filter(|&n| n > 0)
+            .fold((0, 0), |(hits, cues), n| (hits + n, cues + 1))
+    }
+
+    /// Replace every occurrence of the search with `with`, then leave the search
+    /// set to what was put in, so the result is what ends up highlighted.
+    fn apply_replace(&mut self, with: &str) {
+        let needle = self.search.clone();
+        let mut hits = 0;
+        let mut cues = 0;
+        if let Some(doc) = &mut self.vtt {
+            for i in 0..doc.cue_count() {
+                let Some(text) = doc.cue_text(i) else { continue };
+                let (replaced, n) = search::replace_all(&text, &needle, with);
+                if n > 0 {
+                    doc.set_cue_text(i, &replaced);
+                    hits += n;
+                    cues += 1;
+                }
+            }
+        }
+        if hits > 0 {
+            self.vtt_dirty = true;
+        }
+        self.search = with.to_string();
+        self.status = format!(
+            "replaced {hits} in {cues} cue{} — s to save",
+            if cues == 1 { "" } else { "s" }
+        );
     }
 
     /// Jump to the next (or previous) cue whose text matches the search,
@@ -806,12 +895,21 @@ impl App {
     fn handle_confirm(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let pc = self.pending_cut.take().expect("pending cut present");
-                self.run_cut(&pc.output, pc.mode, pc.start, pc.end, true);
+                if let Some(with) = self.pending_replace.take() {
+                    self.apply_replace(&with);
+                } else if let Some(pc) = self.pending_cut.take() {
+                    self.run_cut(&pc.output, pc.mode, pc.start, pc.end, true);
+                }
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                let what = if self.pending_replace.is_some() {
+                    "replace"
+                } else {
+                    "export"
+                };
+                self.pending_replace = None;
                 self.pending_cut = None;
-                self.status = "export cancelled".into();
+                self.status = format!("{what} cancelled");
             }
             _ => {}
         }
@@ -1406,6 +1504,89 @@ mod tests {
         type_search(&mut app, "");
         assert_eq!(app.search, "");
         assert_eq!(highlighted(&app), "", "clearing takes the highlight with it");
+    }
+
+    /// Type a replacement the way the keyboard does: `r`, the text, Enter.
+    /// Stops at the confirmation, which is the caller's to answer.
+    fn type_replace(app: &mut App, with: &str) {
+        app.apply(Action::ReplaceStart);
+        assert_eq!(app.mode, Mode::Replacing);
+        for c in with.chars() {
+            app.handle_replace_key(KeyEvent::from(KeyCode::Char(c)));
+        }
+        app.handle_replace_key(KeyEvent::from(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    fn cue_texts(app: &App) -> Vec<String> {
+        let doc = app.vtt.as_ref().expect("subtitles");
+        (0..doc.cue_count())
+            .map(|i| doc.cue_text(i).unwrap_or_default())
+            .collect()
+    }
+
+    #[test]
+    fn replace_asks_before_touching_every_cue() {
+        let mut app = app_with_cues(&[
+            (0.0, 2.0, "ビルドリを起動".to_string()),
+            (2.0, 4.0, "べつの話".to_string()),
+            (4.0, 6.0, "ビルドリとビルドリ".to_string()),
+        ]);
+        type_search(&mut app, "ビルドリ");
+        type_replace(&mut app, "UTOR");
+
+        // Nothing has changed yet: it counted, and asked.
+        assert!(
+            app.status.contains("replace 3 in 2 cues with “UTOR”? y/n"),
+            "{}",
+            app.status
+        );
+        assert_eq!(cue_texts(&app)[0], "ビルドリを起動");
+        assert!(!app.vtt_dirty);
+
+        // Answering no leaves the subtitles alone.
+        app.handle_confirm(KeyCode::Char('n'));
+        assert_eq!(cue_texts(&app)[0], "ビルドリを起動");
+        assert!(!app.vtt_dirty);
+
+        // Answering yes replaces every occurrence, in every cue.
+        type_replace(&mut app, "UTOR");
+        app.handle_confirm(KeyCode::Char('y'));
+        assert_eq!(
+            cue_texts(&app),
+            ["UTORを起動", "べつの話", "UTORとUTOR"]
+        );
+        assert!(app.vtt_dirty, "the edit is unsaved until s");
+        assert!(app.status.contains("replaced 3 in 2 cues"), "{}", app.status);
+
+        // The search follows the replacement, so what went in is highlighted.
+        assert_eq!(app.search, "UTOR");
+        assert_eq!(highlighted(&app), "UTORUTORUTOR");
+    }
+
+    #[test]
+    fn replace_needs_something_to_replace() {
+        let mut app = app_for_search();
+        app.apply(Action::ReplaceStart);
+        assert_eq!(app.mode, Mode::Normal, "no search, no prompt");
+        assert!(app.status.contains("press / to find"), "{}", app.status);
+
+        // A search that matches nothing gets no further either.
+        type_search(&mut app, "ありません");
+        app.apply(Action::ReplaceStart);
+        type_replace(&mut app, "x");
+        assert!(app.status.contains("no match"), "{}", app.status);
+        assert!(app.pending_replace.is_none());
+    }
+
+    #[test]
+    fn replacing_with_nothing_deletes_the_word() {
+        let mut app = app_with_cues(&[(0.0, 2.0, "えーっと、そうですね".to_string())]);
+        type_search(&mut app, "えーっと、");
+        type_replace(&mut app, "");
+        app.handle_confirm(KeyCode::Char('y'));
+        assert_eq!(cue_texts(&app), ["そうですね"]);
+        assert_eq!(app.search, "", "and the highlight goes with it");
     }
 
     #[test]

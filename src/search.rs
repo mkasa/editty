@@ -47,6 +47,25 @@ pub fn matches(text: &str, needle: &str) -> Vec<Range<usize>> {
     scan(text, &needle).collect()
 }
 
+/// `text` with every occurrence of `needle` replaced by `with`, and how many
+/// there were. The replacement goes in verbatim — case is folded to *find* a
+/// word, never to re-case what takes its place.
+pub fn replace_all(text: &str, needle: &str, with: &str) -> (String, usize) {
+    let hits = matches(text, needle);
+    if hits.is_empty() {
+        return (text.to_string(), 0);
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for hit in &hits {
+        out.push_str(&text[at..hit.start]);
+        out.push_str(with);
+        at = hit.end;
+    }
+    out.push_str(&text[at..]);
+    (out, hits.len())
+}
+
 /// Non-overlapping occurrences, left to right.
 fn scan<'a>(text: &'a str, needle: &'a [char]) -> impl Iterator<Item = Range<usize>> + 'a {
     let mut pos = 0;
@@ -114,6 +133,28 @@ mod tests {
     fn an_empty_needle_matches_nothing() {
         assert!(!contains("anything", ""));
         assert!(matches("anything", "").is_empty());
+    }
+
+    #[test]
+    fn replaces_every_occurrence() {
+        assert_eq!(
+            replace_all("ビルドリはビルドリです", "ビルドリ", "UTOR"),
+            ("UTORはUTORです".to_string(), 2)
+        );
+        // Case folds to find, but the replacement goes in as typed.
+        assert_eq!(
+            replace_all("Utor and UTOR", "utor", "UTOR"),
+            ("UTOR and UTOR".to_string(), 2)
+        );
+        // A replacement containing the needle doesn't feed on itself.
+        assert_eq!(
+            replace_all("abc", "abc", "abcabc"),
+            ("abcabc".to_string(), 1)
+        );
+        // Replacing with nothing deletes the word.
+        assert_eq!(replace_all("あいうえお", "うえ", ""), ("あいお".to_string(), 1));
+        // No match leaves the text exactly as it was.
+        assert_eq!(replace_all("そのまま", "ない", "x"), ("そのまま".to_string(), 0));
     }
 
     #[test]

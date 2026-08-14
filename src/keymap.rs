@@ -30,6 +30,8 @@ pub enum Action {
     /// Jump to the next / previous cue matching the current search.
     SearchNext,
     SearchPrev,
+    /// Open the prompt for what to replace the search with, everywhere.
+    ReplaceStart,
     SnapStart,
     SnapEnd,
     NewCue,
@@ -70,6 +72,7 @@ pub fn map(key: KeyEvent) -> Action {
         KeyCode::Char('k') | KeyCode::Up => CuePrev,
         KeyCode::Enter => EditCue,
         KeyCode::Char('/') => SearchStart,
+        KeyCode::Char('r') => ReplaceStart,
         KeyCode::Tab => SearchNext,
         KeyCode::BackTab => SearchPrev,
         KeyCode::Char('[') => SnapStart,

@@ -44,8 +44,13 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             return prompt(f, app, area, " NAME ", " save clip as: ", keys);
         }
         Mode::Searching => {
-            let keys = "Enter find · Esc cancel · empty clears";
+            let keys = "Enter find · Esc cancel · empty clears the highlight";
             return prompt(f, app, area, " FIND ", " find in cues: ", keys);
+        }
+        Mode::Replacing => {
+            let label = format!(" replace “{}” with: ", app.search);
+            let keys = "Enter · Esc cancel · then y to confirm";
+            return prompt(f, app, area, " REPLACE ", &label, keys);
         }
         _ => {}
     }
@@ -54,7 +59,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let (badge, badge_bg) = match app.mode {
         Mode::Editing => (" EDIT ", Color::Magenta),
-        Mode::Naming | Mode::Searching => (" NAME ", Color::Magenta),
+        Mode::Naming | Mode::Searching | Mode::Replacing => (" NAME ", Color::Magenta),
         Mode::Normal if app.is_playing() => (" ▶ PLAY ", Color::Green),
         Mode::Normal => (" ▮▮ PAUSE ", Color::Blue),
     };
@@ -98,9 +103,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
 
     let hint = match app.mode {
         Mode::Editing => " ←/→ move  Ctrl-←/→ word  Home/End  BS/Del  Enter commit  Esc cancel ",
-        Mode::Naming | Mode::Searching => "",
+        Mode::Naming | Mode::Searching | Mode::Replacing => "",
         Mode::Normal => {
-            " Space play  ←/→ seek  i/o mark  x/X cut  j/k cue  / find  s save  ? help  q quit "
+            " Space play  ←/→ seek  i/o mark  x/X cut  j/k cue  / find  r replace  s save  ? help  q quit "
         }
     };
     parts.push(Span::styled(hint, Style::default().fg(Color::DarkGray)));
