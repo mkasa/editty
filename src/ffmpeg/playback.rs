@@ -163,11 +163,8 @@ impl Playback {
         let Some(path) = &self.audio_path else { return };
         let mut cmd = Command::new("ffplay");
         cmd.args(["-nodisp", "-vn", "-autoexit", "-loglevel", "quiet", "-ss"])
-            .arg(format!("{:.3}", self.start_pos));
-        // Match audio tempo to the playback speed (pitch preserved), like YouTube.
-        if (self.speed - 1.0).abs() > 1e-3 {
-            cmd.args(["-af", &atempo_chain(self.speed)]);
-        }
+            .arg(format!("{:.3}", self.start_pos))
+            .args(["-af", &audio_filter(self.start_pos, self.speed)]);
         self.audio = cmd
             .arg(path)
             .stdin(Stdio::null())
@@ -176,6 +173,24 @@ impl Playback {
             .spawn()
             .ok();
     }
+}
+
+/// The audio filter for playback from `start_pos` at `speed`.
+///
+/// `ffplay -ss` is not an accurate seek: it lands on the nearest video keyframe
+/// *before* the requested time, and the video and the clock (which ffmpeg does
+/// seek accurately) then run up to a whole GOP ahead of the sound — on a screen
+/// recording with 30 s keyframe intervals that is a subtitle lag of 0–30 s
+/// depending on where playback started. `atrim` compares against absolute
+/// timestamps, so it discards exactly the audio before `start_pos`.
+fn audio_filter(start_pos: f64, speed: f64) -> String {
+    let mut chain = format!("atrim=start={start_pos:.3}");
+    // Match audio tempo to the playback speed (pitch preserved), like YouTube.
+    if (speed - 1.0).abs() > 1e-3 {
+        chain.push(',');
+        chain.push_str(&atempo_chain(speed));
+    }
+    chain
 }
 
 /// Build an `atempo` filter chain for `speed`. A single `atempo` only accepts
@@ -206,6 +221,14 @@ mod tests {
     use std::path::Path;
     use std::thread::sleep;
     use std::time::Duration;
+
+    #[test]
+    fn audio_filter_trims_to_the_seek_point() {
+        assert_eq!(audio_filter(1410.0, 1.0), "atrim=start=1410.000");
+        assert_eq!(audio_filter(0.0, 1.0), "atrim=start=0.000");
+        assert_eq!(audio_filter(12.5, 1.5), "atrim=start=12.500,atempo=1.5");
+        assert_eq!(audio_filter(7.0, 0.25), "atrim=start=7.000,atempo=0.5,atempo=0.5");
+    }
 
     #[test]
     fn atempo_chains_out_of_range_speeds() {
